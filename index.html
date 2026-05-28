@@ -125,7 +125,6 @@
     </style>
 </head>
 <body>
-    
     <div id="app" v-cloak>
         <div v-if="!isLoggedIn || activeTab === 'probe'" class="probe-body" :class="probeSys.theme">
             
@@ -480,8 +479,9 @@
                                         <option value="theme1">1. 默认清爽白 (Classic)</option><option value="theme2">2. 暗黑极客 (Dark)</option><option value="theme3">3. 新粗野主义 (Brutalism)</option><option value="theme4">4. 动态渐变毛玻璃 (Glass)</option><option value="theme5">5. 赛博朋克 (Cyberpunk)</option><option value="theme6">6. 完全自定义 CSS</option>
                                     </select>
                                 </div>
-                                <div v-if="probeSys.theme === 'theme6'"><label class="block text-xs font-bold text-slate-500 mb-1">自定义 CSS 代码</label><textarea v-model="probeSys.custom_css" rows="3" class="w-full bg-white/50 border p-2.5 rounded-xl text-sm font-mono"></textarea></div>
+                                <div><label class="block text-xs font-bold text-slate-500 mb-1">自定义 CSS 代码</label><textarea v-model="probeSys.custom_css" rows="3" class="w-full bg-white/50 border p-2.5 rounded-xl text-sm font-mono"></textarea></div>
                                 <div><label class="block text-xs font-bold text-slate-500 mb-1">自定义背景图片 URL (清空恢复纯色)</label><input v-model="probeSys.custom_bg" class="w-full bg-white/50 border p-2.5 rounded-xl text-sm font-medium text-slate-700"></div>
+                                <div><label class="block text-xs font-bold text-slate-500 mb-1">探针客户端上报间隔 (秒)</label><input type="number" v-model="probeSys.report_interval" class="w-full bg-white/50 border p-2.5 rounded-xl text-sm font-medium text-slate-700"></div>
                             </div>
                             <div class="space-y-4">
                                 <label class="block text-sm font-bold text-slate-700 mb-2">👁️ 前台展示控制</label>
@@ -491,6 +491,15 @@
                                 <label class="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" v-model="probeSys.show_expire" true-value="true" false-value="false" class="w-4 h-4"> 显示机器到期时间</label>
                                 <label class="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" v-model="probeSys.show_bw" true-value="true" false-value="false" class="w-4 h-4"> 显示带宽徽章</label>
                                 <label class="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" v-model="probeSys.show_tf" true-value="true" false-value="false" class="w-4 h-4"> 显示流量配额徽章</label>
+                                
+                                <label class="block text-sm font-bold text-rose-500 mt-6 mb-2">✈️ Telegram 离线告警设置</label>
+                                <div>
+                                    <select v-model="probeSys.tg_notify" class="w-full bg-white/50 border p-2.5 rounded-xl text-sm font-medium text-slate-700 mb-2">
+                                        <option value="false">关闭告警</option><option value="true">开启告警 (掉线超过2分钟自动推送)</option>
+                                    </select>
+                                    <input v-if="probeSys.tg_notify === 'true'" v-model="probeSys.tg_bot_token" placeholder="Bot Token" class="w-full bg-white/50 border p-2.5 rounded-xl text-sm mb-2">
+                                    <input v-if="probeSys.tg_notify === 'true'" v-model="probeSys.tg_chat_id" placeholder="Chat ID" class="w-full bg-white/50 border p-2.5 rounded-xl text-sm">
+                                </div>
                             </div>
                         </div>
                         <button @click="saveProbeSettings" class="mt-6 bg-blue-600 text-white px-8 py-3 rounded-2xl font-bold hover:bg-blue-700 transition-all shadow-md">💾 立即生效配置</button>
@@ -586,7 +595,7 @@
                 let initOsMap = {}; try { initOsMap = JSON.parse(localStorage.getItem('kui_deploy_os') || '{}'); } catch(e) {}
                 const deployOsMap = reactive(initOsMap);
 
-                const probeSys = reactive({ theme: 'theme1', is_public: 'true', site_title: 'Server Monitor Pro', custom_bg: '', custom_css: '' });
+                const probeSys = reactive({ theme: 'theme1', is_public: 'true', site_title: 'Server Monitor Pro', custom_bg: '', custom_css: '', report_interval: '5' });
                 const publicProbeServers = ref([]);
                 const probeView = ref(localStorage.getItem('monitor_preferred_view') || 'card');
                 const probeDetailId = ref(null); const probeDetail = ref({});
@@ -602,7 +611,7 @@
                     let styleTag = document.getElementById('kui-custom-styles');
                     if (!styleTag) { styleTag = document.createElement('style'); styleTag.id = 'kui-custom-styles'; document.head.appendChild(styleTag); }
                     let css = '';
-                    if (probeSys.theme === 'theme6' && probeSys.custom_css) css += probeSys.custom_css + '\n';
+                    if (probeSys.custom_css) css += probeSys.custom_css + '\n';
                     if (probeSys.custom_bg) css += `body { background: url('${probeSys.custom_bg}') no-repeat center center fixed !important; background-size: cover !important; } .probe-vps-card, .probe-global-stats, .probe-header-card, .probe-chart-card, .probe-custom-table, .probe-filter-tag, .probe-view-controls { background: rgba(255, 255, 255, 0.4) !important; backdrop-filter: blur(12px) !important; -webkit-backdrop-filter: blur(12px) !important; border: 1px solid rgba(255, 255, 255, 0.6) !important; box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1) !important; color: #111 !important; } .probe-vps-card:hover { background: rgba(255, 255, 255, 0.6) !important; transform: translateY(-3px); } .probe-group-header { color: #fff !important; text-shadow: 0 2px 5px rgba(0,0,0,0.6) !important; border-left-color: #fff !important; } .probe-g-val, .probe-card-title { color: #000 !important; font-weight: 800 !important; } .probe-g-label, .probe-g-sub, .probe-card-meta { color: #333 !important; font-weight: 600 !important; } .probe-stat-bar-full { background: rgba(0,0,0,0.1) !important; }`;
                     styleTag.innerHTML = css;
                 };
@@ -636,7 +645,7 @@
                     options.headers = { ...options.headers, 'Authorization': `${btoa(currentUser.value)}.${timestamp}.${signature}` };
                     const res = await fetch(url, options);
                     if (res.status === 401) { logout(); throw new Error('Unauthorized'); }
-                    if (!res.ok) throw new Error('API Failed');
+                    if (!res.ok) { const err = await res.json(); alert(`❌ 后端报错: ${err.error || err.message}`); throw new Error('API Failed'); }
                     return res;
                 };
 
@@ -764,7 +773,7 @@
                 const toggleUser = async (username, status) => { await fetchApi('/api/users', { method: 'PUT', body: JSON.stringify({ username, enable: status }) }); refreshData(); };
                 const deleteUser = async (username) => { if(confirm('⚠️ 确定删除用户？节点将归还给管理员。')) { await fetchApi(`/api/users?username=${username}`, { method: 'DELETE' }); refreshData(); } };
                 const resetUserTraffic = async (username) => { await fetchApi('/api/users', { method: 'PUT', body: JSON.stringify({ username, reset_traffic: true }) }); refreshData(); };
-                const addVps = async () => { if(!newVps.value.ip || !newVps.value.name) return alert('请输入名称和IP'); deployOsMap[newVps.value.ip] = newVps.value.os; saveOsMap(); await fetchApi('/api/vps', { method: 'POST', body: JSON.stringify({ ip: newVps.value.ip, name: newVps.value.name }) }); newVps.value = { name: '', ip: '', os: 'debian' }; refreshData(); };
+                const addVps = async () => { if(!newVps.value.ip || !newVps.value.name) return alert('请输入名称和IP'); deployOsMap[newVps.value.ip] = newVps.value.os; saveOsMap(); await fetchApi('/api/vps', { method: 'POST', body: JSON.stringify({ ip: newVps.value.ip, name: newVps.value.name }) }); newVps.value = { name: '', ip: '', os: 'debian' }; refreshData(); fetchProbeData();};
                 const deleteVps = async (ip) => { if(confirm('🧨 确定移除该机器？该机器相关的探针数据、节点数据将被完全清空！')) { await fetchApi(`/api/vps?ip=${ip}`, { method: 'DELETE' }); refreshData(); fetchProbeData();} };
 
                 const addNode = async (ip) => {
