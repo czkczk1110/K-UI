@@ -1,0 +1,17 @@
+name = "K-UI"
+compatibility_date = "2026-06-28"
+
+# 数据库绑定 (必须叫 DB)
+[[d1_databases]]
+binding = "DB"
+database_name = "kui-db"
+database_id = "你的-D1-数据库-UUID"
+
+# 环境变量预设
+[vars]
+API_SECRET = "你的自定义强密码"
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "你的管理密码"
+# 选填项
+# TG_BOT_TOKEN = "可选"
+# TG_CHAT_ID = "可选"
