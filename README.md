@@ -1,5 +1,6 @@
 DEV修复情况
-2026/07/09  已修复clash订阅问题
+
+2026/07/09  已修复clash订阅问题   已修复socks5填写输入回退问题
 
 # ⚡ KUI x Server Monitor Pro - 无服务器集群网关
 
