@@ -124,7 +124,7 @@ def check_for_updates():
                 expected = response.headers.get("X-Agent-SHA256", "").lower()
             if len(source) > 2 * 1024 * 1024 or not re.fullmatch(r"[0-9a-f]{64}", expected) or hashlib.sha256(source).hexdigest() != expected:
                 raise ValueError(f"{component} checksum mismatch")
-            if hashlib.sha256(target.read_bytes()).hexdigest() == expected:
+            if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest() == expected:
                 continue
             temporary = target.with_name(target.name + ".update.py")
             temporary_files.append(temporary)
