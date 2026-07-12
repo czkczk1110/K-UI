@@ -5,8 +5,15 @@ import ipaddress
 import select, socket, threading, urllib.parse, time, base64, hmac
 from typing import Any
 
-_PROXY_USER = os.environ.get("PROXY_USER", "proxy")
-_PROXY_PASS = os.environ.get("PROXY_PASS", "888888")
+def env_secret(name: str) -> str:
+    encoded = os.environ.get(name + "_B64")
+    if encoded:
+        try: return base64.b64decode(encoded).decode("utf-8")
+        except Exception: return ""
+    return os.environ.get(name, "")
+
+_PROXY_USER = env_secret("PROXY_USER")
+_PROXY_PASS = env_secret("PROXY_PASS")
 
 def set_credentials(user: str, passwd: str) -> None:
     global _PROXY_USER, _PROXY_PASS, PROXY_USER, PROXY_PASS
@@ -20,6 +27,8 @@ PROXY_PASS = _PROXY_PASS.encode()
 
 # 全局软开关：由 lite_manager 动态更新，实现秒切
 ACTIVE_BIND = "tun_main"
+MAX_CONNECTIONS = max(16, int(os.environ.get("PROXY_MAX_CONNECTIONS", "256")))
+CONNECTION_SLOTS = threading.BoundedSemaphore(MAX_CONNECTIONS)
 
 def parse_int(value: Any) -> int:
     try: return int(value)
@@ -77,13 +86,11 @@ def create_connection(address: tuple[str, int], timeout: float = 20) -> socket.s
         try:
             sock = socket.socket(af, socktype, proto)
             sock.settimeout(timeout)
-            if bind_interface and af == socket.AF_INET:
+            if bind_interface and af in (socket.AF_INET, socket.AF_INET6):
                 try:
                     sock.setsockopt(socket.SOL_SOCKET, 25, bind_interface.encode('utf-8'))
                 except OSError:
                     continue
-            elif bind_interface and af == socket.AF_INET6:
-                continue
             sock.connect(sa)
             return sock
         except OSError as e:
@@ -104,6 +111,9 @@ def relay(left: socket.socket, right: socket.socket) -> None:
             target.sendall(data)
 
 def socks5_client(client: socket.socket, first_byte: bytes) -> None:
+    if not PROXY_USER or not PROXY_PASS:
+        client.sendall(b"\x05\xff")
+        return
     upstream = None
     try:
         methods_count = recv_exact(client, 1)[0]
@@ -127,9 +137,13 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
         client.sendall(b"\x01\x00") 
 
         version, command, _, address_type = recv_exact(client, 4)
-        if version != 5 or command != 1: return
+        if version != 5:
+            return
+        if command != 1:
+            client.sendall(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+            return
         if address_type == 1: host = socket.inet_ntoa(recv_exact(client, 4))
-        elif address_type == 3: host = recv_exact(client, recv_exact(client, 1)[0]).decode("idna")
+        elif address_type == 3: host = recv_exact(client, recv_exact(client, 1)[0]).decode("ascii")
         elif address_type == 4: host = socket.inet_ntop(socket.AF_INET6, recv_exact(client, 16))
         else: return
         port = int.from_bytes(recv_exact(client, 2), "big")
@@ -143,6 +157,9 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
         if upstream: upstream.close()
 
 def http_client(client: socket.socket, first_byte: bytes) -> None:
+    if not PROXY_USER or not PROXY_PASS:
+        client.sendall(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n")
+        return
     upstream = None
     try:
         data = first_byte
@@ -199,6 +216,8 @@ def proxy_client(client: socket.socket, address: tuple[str, int]) -> None:
     except:
         try: client.close()
         except: pass
+    finally:
+        CONNECTION_SLOTS.release()
 
 def start_proxy_server(host: str, port: int) -> None:
     servers = []
@@ -236,6 +255,13 @@ def start_proxy_server(host: str, port: int) -> None:
             readable, _, _ = select.select(servers, [], [], 1.0)
             for server in readable:
                 client, address = server.accept()
-                threading.Thread(target=proxy_client, args=(client, address), daemon=True).start()
+                if not CONNECTION_SLOTS.acquire(blocking=False):
+                    client.close()
+                    continue
+                try:
+                    threading.Thread(target=proxy_client, args=(client, address), daemon=True).start()
+                except Exception:
+                    CONNECTION_SLOTS.release()
+                    client.close()
         except Exception:
             time.sleep(0.5)

@@ -40,10 +40,13 @@ if [ -z "$VPS_IP" ]; then
     echo "❌ 错误: 缺少 --ip (面板登记的服务器 IP)"
     exit 1
 fi
+if ! printf '%s\n%s\n' "$DOMAIN" "$CONTROLLER" | grep -Eq '^https?://[A-Za-z0-9._:/-]+$'; then echo "❌ 域名参数格式无效"; exit 1; fi
+if ! printf '%s' "$VPS_IP" | grep -Eq '^[0-9A-Fa-f:.]+$'; then echo "❌ VPS IP 格式无效"; exit 1; fi
+if ! printf '%s' "$AGENT_TOKEN" | grep -Eq '^[A-Za-z0-9._:-]+$'; then echo "❌ Agent Token 包含非法字符"; exit 1; fi
 
 export C2_URL="$CONTROLLER"
 export WEB_USER="${WEB_USER:-admin}"
-export WEB_PASS="${WEB_PASS:-admin888}"
+export WEB_PASS="${WEB_PASS:-}"
 export AGENT_TOKEN
 export VPS_IP
 
@@ -182,13 +185,32 @@ download_agents() {
 
 install_service() {
     echo "[3/4] 配置系统守护服务..."
+    install -d -m 700 /etc/proxy-lite
+    umask 077
+    WEB_USER_B64=$(printf '%s' "${WEB_USER:-admin}" | base64 | tr -d '\n')
+    WEB_PASS_B64=$(printf '%s' "${WEB_PASS:-}" | base64 | tr -d '\n')
+    PROXY_USER_B64=$(printf '%s' "${PROXY_USER:-}" | base64 | tr -d '\n')
+    PROXY_PASS_B64=$(printf '%s' "${PROXY_PASS:-}" | base64 | tr -d '\n')
+    cat > /etc/proxy-lite/env << EOF
+C2_URL="${CONTROLLER}"
+WEB_USER_B64="${WEB_USER_B64}"
+WEB_PASS_B64="${WEB_PASS_B64}"
+PROXY_USER_B64="${PROXY_USER_B64}"
+PROXY_PASS_B64="${PROXY_PASS_B64}"
+AGENT_TOKEN="${AGENT_TOKEN}"
+VPS_IP="${VPS_IP}"
+PYTHONIOENCODING="utf-8"
+LANG="C.UTF-8"
+EOF
+    chmod 600 /etc/proxy-lite/env
+    umask 022
 
     if [ "$INIT_SYS" = "systemd" ]; then
         systemctl stop proxy-lite 2>/dev/null || true
         systemctl disable proxy-lite 2>/dev/null || true
-        rm -f /lib/systemd/system/proxy-lite.service
+        rm -f /lib/systemd/system/proxy-lite.service /etc/systemd/system/proxy-lite.service
 
-        SERVICE_FILE="/lib/systemd/system/proxy-lite.service"
+        SERVICE_FILE="/etc/systemd/system/proxy-lite.service"
         cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=Proxy Core Engine (Active-Standby)
@@ -196,15 +218,7 @@ After=network.target
 
 [Service]
 Type=simple
-Environment="C2_URL=${CONTROLLER}"
-Environment="WEB_USER=${WEB_USER:-admin}"
-Environment="WEB_PASS=${WEB_PASS:-admin888}"
-Environment="PROXY_USER=${PROXY_USER:-proxy}"
-Environment="PROXY_PASS=${PROXY_PASS:-888888}"
-Environment="AGENT_TOKEN=${AGENT_TOKEN:-}"
-Environment="VPS_IP=${VPS_IP:-}"
-Environment="PYTHONIOENCODING=utf-8"
-Environment="LANG=C.UTF-8"
+EnvironmentFile=/etc/proxy-lite/env
 WorkingDirectory=/opt/proxy_lite
 ExecStart=/usr/bin/python3 -u lite_manager.py
 Restart=always
@@ -222,22 +236,15 @@ EOF
         rc-update del proxy-lite default >/dev/null 2>&1 || true
         rm -f /etc/init.d/proxy-lite /etc/conf.d/proxy-lite
 
-        cat > /etc/init.d/proxy-lite << EOF
+        cp /etc/proxy-lite/env /etc/conf.d/proxy-lite
+        chmod 600 /etc/conf.d/proxy-lite
+        cat > /etc/init.d/proxy-lite << 'EOF'
 #!/sbin/openrc-run
 name="proxy-lite"
 description="Proxy Core Engine (Active-Standby)"
 command="/usr/bin/python3"
 command_args="-u lite_manager.py"
 directory="/opt/proxy_lite"
-export C2_URL="${CONTROLLER}"
-export WEB_USER="${WEB_USER:-admin}"
-export WEB_PASS="${WEB_PASS:-admin888}"
-export PROXY_USER="${PROXY_USER:-proxy}"
-export PROXY_PASS="${PROXY_PASS:-888888}"
-export AGENT_TOKEN="${AGENT_TOKEN:-}"
-export VPS_IP="${VPS_IP:-}"
-export PYTHONIOENCODING="utf-8"
-export LANG="C.UTF-8"
 depend() {
     need net
     after firewall
@@ -250,21 +257,15 @@ EOF
         echo "    手动管理: rc-service proxy-lite start|stop|restart"
         echo "    查看日志: tail -f /opt/proxy_lite/lite_manager.log 或 log_read /var/log/openrc/proxy-lite"
     else
-        cat > /opt/proxy_lite/run.sh << EOF
+        cat > /opt/proxy_lite/run.sh << 'EOF'
 #!/bin/sh
-export C2_URL="${CONTROLLER}"
-export WEB_USER="${WEB_USER:-admin}"
-export WEB_PASS="${WEB_PASS:-admin888}"
-export PROXY_USER="${PROXY_USER:-proxy}"
-export PROXY_PASS="${PROXY_PASS:-888888}"
-export AGENT_TOKEN="${AGENT_TOKEN:-}"
-export VPS_IP="${VPS_IP:-}"
-export PYTHONIOENCODING=utf-8
-export LANG=C.UTF-8
+set -a
+. /etc/proxy-lite/env
+set +a
 cd /opt/proxy_lite
 exec python3 -u lite_manager.py
 EOF
-        chmod +x /opt/proxy_lite/run.sh
+        chmod 700 /opt/proxy_lite/run.sh
         echo "[+] 未检测到标准初始化系统，启动脚本已创建: /opt/proxy_lite/run.sh"
         echo "    请运行: /opt/proxy_lite/run.sh"
     fi

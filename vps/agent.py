@@ -11,6 +11,7 @@ import base64
 import socket
 import platform
 import tempfile
+import shutil
 from datetime import datetime
 
 # 强制系统编码锁
@@ -36,8 +37,8 @@ TOKEN = env["token"]
 HEADERS = {'Content-Type': 'application/json', 'Authorization': TOKEN, 'User-Agent': 'KUI-Unified-Agent/2.0'}
 
 # 🌟 住宅IP代理：凭证与端口统一取自环境变量（与 Pages 端 PROXY_USER/PROXY_PASS/PROXY_PORT 保持一致）
-PROXY_USER = os.environ.get("PROXY_USER", "proxy")
-PROXY_PASS = os.environ.get("PROXY_PASS", "888888")
+PROXY_USER = os.environ.get("PROXY_USER", "")
+PROXY_PASS = os.environ.get("PROXY_PASS", "")
 PROXY_PORT = int(os.environ.get("PROXY_PORT", "7920"))
 BASE_URL = API_URL.rsplit('/api/', 1)[0] if '/api/' in API_URL else API_URL
 # 住宅IP代理后端：默认与 KUI 同域；独立部署 Free-Residential-IP-Proxy-Controller 时，
@@ -49,7 +50,7 @@ PROXY_CTRL_USER = os.environ.get("PROXY_CTRL_USER", env.get("proxy_ctrl_user", "
 PROXY_CTRL_PASS = os.environ.get("PROXY_CTRL_PASS", env.get("proxy_ctrl_pass", "") if isinstance(env, dict) else "")
 
 def _proxy_ctrl_headers():
-    if PROXY_CTRL_USER and PROXY_CTRL_PASS:
+    if PROXY_API.rstrip('/') != BASE_URL.rstrip('/') and PROXY_CTRL_USER and PROXY_CTRL_PASS:
         return { 'User-Agent': 'Mozilla/5.0', 'Authorization': 'Basic ' + base64.b64encode(f"{PROXY_CTRL_USER}:{PROXY_CTRL_PASS}".encode()).decode() }
     return HEADERS
 
@@ -166,8 +167,9 @@ def _read_iptables_port_bytes(port):
             out = subprocess.run([tool, "-nvxL", chain], capture_output=True, text=True, timeout=3).stdout
         except Exception:
             continue
+        key_pattern = re.compile(rf'(?<!\d){re.escape(key)}(?!\d)')
         for line in out.splitlines():
-            if "ACCEPT" not in line or key not in line:
+            if "ACCEPT" not in line or not key_pattern.search(line):
                 continue
             parts = line.split()
             if len(parts) < 2:
@@ -600,10 +602,24 @@ def build_singbox_config(nodes, proxy_cfg=None, peers=None, mesh=None, socks5_ou
         with open(SINGBOX_CONF_PATH, "r") as f: old_config_str = f.read()
 
     if new_config_str != old_config_str:
-        with open(SINGBOX_CONF_PATH, "w") as f: f.write(new_config_str)
-        os.chmod(SINGBOX_CONF_PATH, 0o600)
-        if os.path.exists("/sbin/openrc-run") or os.path.exists("/etc/alpine-release"): os.system("rc-service sing-box restart >/dev/null 2>&1")
-        else: os.system("systemctl restart sing-box >/dev/null 2>&1")
+        temp_config = SINGBOX_CONF_PATH + ".tmp"
+        with open(temp_config, "w") as f: f.write(new_config_str)
+        os.chmod(temp_config, 0o600)
+        sing_box = shutil.which("sing-box")
+        if not sing_box:
+            print("[agent] sing-box binary not found; keeping last known-good config", flush=True)
+            os.remove(temp_config)
+            return
+        checked = subprocess.run([sing_box, "check", "-c", temp_config], capture_output=True, text=True)
+        if checked.returncode != 0:
+            print(f"[agent] sing-box config rejected: {checked.stderr.strip()}", flush=True)
+            os.remove(temp_config)
+            return
+        os.replace(temp_config, SINGBOX_CONF_PATH)
+        if os.path.exists("/sbin/openrc-run") or os.path.exists("/etc/alpine-release"):
+            subprocess.run(["rc-service", "sing-box", "restart"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.run(["systemctl", "restart", "sing-box"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def report_status(current_nodes, argo_urls):
     global last_reported_bytes, global_interval, dynamic_ping, pending_report_id, pending_report_bytes, pending_node_traffic
@@ -619,7 +635,8 @@ def report_status(current_nodes, argo_urls):
         current_ids.add(nid)
         proto = "udp" if node["protocol"] in ["Hysteria2", "TUIC"] else "tcp"
         current_bytes = get_port_traffic(port, proto)
-        delta = current_bytes - pending_bytes.get(nid, current_bytes)
+        baseline = pending_bytes.get(nid, current_bytes)
+        delta = current_bytes - baseline if current_bytes >= baseline else current_bytes
         if delta > 0: deltas.append({ "id": nid, "delta_bytes": delta })
         pending_bytes[nid] = current_bytes
 
@@ -639,7 +656,7 @@ def report_status(current_nodes, argo_urls):
         pending_report_bytes = None
         pending_node_traffic = None
         if resp_data and "interval" in resp_data:
-            global_interval = max(1, int(resp_data["interval"]))
+            global_interval = min(max(1, int(resp_data["interval"])), 3600)
         for key in ("ct", "cu", "cm"):
             value = resp_data.get(f"ping_{key}")
             dynamic_ping[key] = None if not value or value == "default" else value
@@ -673,7 +690,8 @@ def fetch_proxy_mesh(country="ANY"):
     # 外部控制器对等节点列表：优先走 /api/proxies（返回 socks5:// 纯文本），本地按国家过滤
     try:
         c = (country or "ANY").upper()
-        url = f"{PROXY_API}/api/proxies?ip={VPS_IP}"
+        proxy_path = "/api/proxy/proxies" if PROXY_API.rstrip('/') == BASE_URL.rstrip('/') else "/api/proxies"
+        url = f"{PROXY_API}{proxy_path}?ip={VPS_IP}"
         req = urllib.request.Request(url, headers=_proxy_ctrl_headers())
         raw = urllib.request.urlopen(req, timeout=10).read().decode('utf-8')
         peers = []

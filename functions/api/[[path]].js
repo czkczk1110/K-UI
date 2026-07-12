@@ -218,7 +218,7 @@ async function parseThirdPartySubscription(content) {
                 if (parsed) node = parsed;
             } else if (rawLC.startsWith('trojan://')) {
                 const parsed = parseVLESSLink(raw);
-                if (parsed) { parsed.protocol = 'Trojan'; node = parsed; }
+                if (parsed) { parsed.protocol = 'Trojan'; parsed.password = parsed.uuid; parsed.uuid = ''; node = parsed; }
             } else if (rawLC.startsWith('hysteria2://') || rawLC.startsWith('hy2://') || rawLC.startsWith('hysteria://')) {
                 const parsed = parseHysteria2Link(raw);
                 if (parsed) node = parsed;
@@ -307,7 +307,7 @@ async function ensureDbSchema(db) {
         `CREATE TABLE IF NOT EXISTS proxy_ctrl_servers (ip TEXT PRIMARY KEY, details TEXT, last_seen INTEGER)`,
         `CREATE TABLE IF NOT EXISTS server_logs (ip TEXT PRIMARY KEY, logs TEXT, updated_at INTEGER)`,
         `CREATE TABLE IF NOT EXISTS proxy_slot_map (key TEXT PRIMARY KEY, value TEXT)`,
-        `CREATE TABLE IF NOT EXISTS report_receipts (report_id TEXT PRIMARY KEY, vps_ip TEXT NOT NULL, created_at INTEGER NOT NULL)`
+        `CREATE TABLE IF NOT EXISTS report_receipts (report_id TEXT PRIMARY KEY, vps_ip TEXT NOT NULL, created_at INTEGER NOT NULL, applied INTEGER DEFAULT 1)`
     ];
     for (let query of initQueries) { try { await db.prepare(query).run(); } catch (e) {} }
 
@@ -335,6 +335,8 @@ async function ensureDbSchema(db) {
     try { await db.prepare("SELECT socks5_enable FROM servers LIMIT 1").first(); } catch (e) { const s5Cols = ['socks5_enable INTEGER DEFAULT 0', 'socks5_addr TEXT DEFAULT ""', 'socks5_port INTEGER DEFAULT 0', 'socks5_user TEXT DEFAULT ""', 'socks5_pass TEXT DEFAULT ""']; for (let col of s5Cols) { try { await db.prepare(`ALTER TABLE servers ADD COLUMN ${col}`).run(); } catch(err){} } }
     try { await db.prepare("SELECT socks5_mode FROM servers LIMIT 1").first(); } catch (e) { try { await db.prepare("ALTER TABLE servers ADD COLUMN socks5_mode TEXT DEFAULT 'global'").run(); } catch(err){} try { await db.prepare("ALTER TABLE servers ADD COLUMN socks5_domains TEXT DEFAULT ''").run(); } catch(err){} }
     try { await db.prepare("SELECT agent_token FROM servers LIMIT 1").first(); } catch (e) { try { await db.prepare("ALTER TABLE servers ADD COLUMN agent_token TEXT").run(); } catch(err){} }
+    try { await db.prepare("SELECT last_report_id FROM probe_servers LIMIT 1").first(); } catch (e) { try { await db.prepare("ALTER TABLE probe_servers ADD COLUMN last_report_id TEXT DEFAULT ''").run(); } catch(err){} }
+    try { await db.prepare("SELECT applied FROM report_receipts LIMIT 1").first(); } catch (e) { try { await db.prepare("ALTER TABLE report_receipts ADD COLUMN applied INTEGER DEFAULT 1").run(); } catch(err){} }
 
     // 初始化云端测速数据
     const checkNodes = await db.prepare("SELECT value FROM probe_settings WHERE key = 'cached_nodes_data'").first();
@@ -409,7 +411,7 @@ async function handleProbeAPI(request, env, context, pathArray) {
     if (method === 'POST' && subPath === 'tg_webhook') {
         try {
             const webhookSecret = env.TG_WEBHOOK_SECRET || '';
-            if (webhookSecret && request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== webhookSecret) return new Response('OK', { status: 200 });
+            if (!webhookSecret || request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== webhookSecret) return new Response('Unauthorized', { status: 401 });
             const body = await request.json();
             const message = body.message; const callback_query = body.callback_query;
             let tgBotToken = ''; let tgChatId = '';
@@ -587,20 +589,25 @@ async function proxyLocal(method, subPath, req, env) {
     const db = env.DB;
     await ensureDbSchema(db);
     const url = new URL(req.url);
-    const proxyUser = env.PROXY_USER || 'proxy';
-    const proxyPass = env.PROXY_PASS || '888888';
+    const proxyUser = env.PROXY_USER || '';
+    const proxyPass = env.PROXY_PASS || '';
+    if (!proxyUser || !proxyPass) return Response.json({ error: 'PROXY_USER and PROXY_PASS must be configured' }, { status: 503 });
 
     if (subPath === 'config') {
         if (method === 'GET') {
             try {
-                const row = await db.prepare("SELECT value FROM probe_settings WHERE key = 'proxy_slot_map'").first();
+                const requestIp = url.searchParams.get('ip');
+                const row = requestIp
+                    ? await db.prepare("SELECT value FROM probe_settings WHERE key = ?").bind(`proxy_slot_map_${requestIp}`).first()
+                    : null;
+                const globalRow = row || await db.prepare("SELECT value FROM probe_settings WHERE key = 'proxy_slot_map'").first();
                 let slotMap = { "0": "JP", "port": 7920 };
-                if (row && row.value) {
-                    try { slotMap = JSON.parse(row.value); } catch(e) {}
+                if (globalRow && globalRow.value) {
+                    try { slotMap = JSON.parse(globalRow.value); } catch(e) {}
                 }
                 const rawCountry = (slotMap["0"] || slotMap.country || "JP").toString().toUpperCase();
-                const proxyCfg = { enabled: true, port: slotMap.port || 7920, user: env.PROXY_USER || 'proxy', pass: env.PROXY_PASS || '888888', country: rawCountry };
-                return new Response(JSON.stringify({ "0": rawCountry, "port": slotMap.port || 7920, "country": rawCountry, switch_trigger: slotMap.switch_trigger || 0, proxy: proxyCfg }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0' } });
+                const proxyCfg = { enabled: slotMap.enabled !== false, port: slotMap.port || 7920, user: proxyUser, pass: proxyPass, country: rawCountry };
+                return new Response(JSON.stringify({ ...slotMap, "0": rawCountry, "port": slotMap.port || 7920, "country": rawCountry, switch_trigger: slotMap.switch_trigger || 0, proxy: proxyCfg }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Pragma': 'no-cache', 'Expires': '0' } });
             } catch (e) { return new Response(JSON.stringify({ success: false, error: "GET config failed: " + e.message }), { status: 500, headers: { 'Content-Type': 'application/json' } }); }
         }
         if (method === 'POST') {
@@ -612,12 +619,31 @@ async function proxyLocal(method, subPath, req, env) {
                 if (data.mesh && typeof data.mesh === 'object') sanitized.mesh = data.mesh;
                 if (data.switch_trigger) sanitized.switch_trigger = data.switch_trigger;
                 console.log('[proxy-config-save] writing to probe_settings:', JSON.stringify(sanitized));
-                await db.prepare("INSERT INTO probe_settings (key, value) VALUES ('proxy_slot_map', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(JSON.stringify(sanitized)).run();
-                const proxyCfg = { enabled: true, port: sanitized.port, user: env.PROXY_USER || 'proxy', pass: env.PROXY_PASS || '888888', country: rawCountry };
+                const configKey = data.ip ? `proxy_slot_map_${data.ip}` : 'proxy_slot_map';
+                await db.prepare("INSERT INTO probe_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(configKey, JSON.stringify(sanitized)).run();
+                const proxyCfg = { enabled: true, port: sanitized.port, user: proxyUser, pass: proxyPass, country: rawCountry };
                 console.log('[proxy-config-save] success, returning:', JSON.stringify({ slot_map: sanitized }));
                 return new Response(JSON.stringify({ success: true, slot_map: sanitized, proxy: proxyCfg }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache, no-store, must-revalidate' } });
             } catch (e) { console.error('[proxy-config-save] FAILED:', e.message); return new Response(JSON.stringify({ success: false, error: "CONFIG_WRITE_ERR: " + e.message }), { status: 500, headers: { 'Content-Type': 'application/json' } }); }
         }
+    }
+
+    if (subPath === 'pool' && method === 'GET') {
+        const cutoff = Date.now() - 120000;
+        const { results } = await db.prepare('SELECT ip, details, last_seen FROM proxy_ctrl_servers WHERE last_seen >= ? ORDER BY last_seen DESC').bind(cutoff).all();
+        return Response.json(results || []);
+    }
+
+    if (subPath === 'switch' && method === 'POST') {
+        const data = await req.json();
+        if (!data.ip) return Response.json({ error: 'IP required' }, { status: 400 });
+        const key = `proxy_slot_map_${data.ip}`;
+        const row = await db.prepare("SELECT value FROM probe_settings WHERE key = ?").bind(key).first();
+        let config = {};
+        try { config = JSON.parse(row && row.value || '{}'); } catch (error) {}
+        config.switch_trigger = Date.now();
+        await db.prepare("INSERT INTO probe_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(key, JSON.stringify(config)).run();
+        return Response.json({ success: true, switch_trigger: config.switch_trigger });
     }
 
     if (subPath === 'report' && method === 'POST') {
@@ -680,18 +706,37 @@ async function proxyLocal(method, subPath, req, env) {
 
     if (subPath.startsWith('testisp-lookup/') && method === 'GET') {
         const targetIp = subPath.replace('testisp-lookup/', '');
+        if (!/^[0-9a-fA-F:.]+$/.test(targetIp)) return new Response(JSON.stringify({ error: 'Invalid IP' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
         try {
             const resp = await fetch(`https://testisp.info/api/check?ip=${encodeURIComponent(targetIp)}`, {
                 headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
             });
             const text = await resp.text();
-            return new Response(text, { status: resp.status, headers: { 'Content-Type': resp.headers.get('content-type') || 'application/json', 'Access-Control-Allow-Origin': '*' } });
+            return new Response(text, { status: resp.status, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } });
         } catch (err) {
             return new Response(JSON.stringify({ error: err.message }), { status: 500, headers: { 'Content-Type': 'application/json' } });
         }
     }
 
     return new Response("Not Found", { status: 404 });
+}
+
+async function checkOfflineServers(env) {
+    const db = env.DB; const nowMs = Date.now();
+    const { results } = await db.prepare(`SELECT ip, name, last_report FROM servers WHERE last_report < ? AND alert_sent = 0`).bind(nowMs - 180000).all();
+    if (!results || !results.length) return 0;
+    let tgBotToken = env.TG_BOT_TOKEN; let tgChatId = env.TG_CHAT_ID;
+    try { const { results: settings } = await db.prepare("SELECT key, value FROM probe_settings WHERE key IN ('tg_bot_token', 'tg_chat_id')").all(); settings.forEach(r => { if(r.key === 'tg_bot_token') tgBotToken = r.value; if(r.key === 'tg_chat_id') tgChatId = r.value; }); } catch(e){}
+    const updates = [];
+    for (const vps of results) {
+        if (tgBotToken && tgChatId) {
+            const text = `⚠️ [KUI 节点失联告警]\n\n节点别名: ${vps.name}\n公网IP: ${vps.ip}\n最后在线: ${new Date(vps.last_report).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+            await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: tgChatId, text }) });
+        }
+        updates.push(db.prepare("UPDATE servers SET alert_sent = 1 WHERE ip = ?").bind(vps.ip));
+    }
+    if (updates.length) await chunkBatch(db, updates);
+    return results.length;
 }
 
 // ==============================================
@@ -719,6 +764,12 @@ export async function onRequest(context) {
         return Response.json({ success: true });
     }
 
+    if (action === "cron_check" && method === "POST") {
+        if (!env.CRON_SECRET || request.headers.get('Authorization') !== `Bearer ${env.CRON_SECRET}`) return new Response('Unauthorized', { status: 401 });
+        await ensureDbSchema(db);
+        return Response.json({ success: true, alerted: await checkOfflineServers(env) });
+    }
+
     // 🌟 Agent 统一探针与管理上报接口 (融入全新的 Reset Day 计算和动态云端测速节点)
     if (action === "report" && method === "POST") {
      try {
@@ -727,11 +778,8 @@ export async function onRequest(context) {
         const nowMs = Date.now();
         const vpsIp = data.ip;
         if (!(await verifyAgent(request.headers.get("Authorization"), vpsIp, db, env))) return new Response("Unauthorized", { status: 401 });
-        let duplicateReport = false;
-        if (data.report_id) {
-            const receipt = await db.prepare("INSERT OR IGNORE INTO report_receipts (report_id, vps_ip, created_at) VALUES (?, ?, ?)").bind(data.report_id, vpsIp, nowMs).run();
-            duplicateReport = !receipt.meta || receipt.meta.changes === 0;
-        }
+        if (!data.report_id) return Response.json({ error: "report_id is required" }, { status: 400 });
+        const duplicateReport = !!(await db.prepare("SELECT report_id FROM report_receipts WHERE report_id = ? AND applied = 1").bind(data.report_id).first());
 
         const kuiServer = await db.prepare('SELECT name FROM servers WHERE ip = ?').bind(vpsIp).first();
         if (!kuiServer) {
@@ -796,7 +844,8 @@ export async function onRequest(context) {
             }
 
             const current_rx = parseFloat(data.net_rx || '0'); const current_tx = parseFloat(data.net_tx || '0');
-            if (!duplicateReport) {
+            const probeAlreadyApplied = probeServer && probeServer.last_report_id === data.report_id;
+            if (!duplicateReport && !probeAlreadyApplied) {
                 if (current_rx >= last_rx) monthly_rx += (current_rx - last_rx); else monthly_rx += current_rx;
                 if (current_tx >= last_tx) monthly_tx += (current_tx - last_tx); else monthly_tx += current_tx;
                 last_rx = current_rx; last_tx = current_tx;
@@ -814,27 +863,29 @@ export async function onRequest(context) {
                 history.time = updateLabels(history.time); history.last_time = nowMs;
             }
 
-            await db.prepare(`UPDATE probe_servers SET cpu=?, ram=?, disk=?, load_avg=?, uptime=?, last_updated=?, ram_total=?, net_rx=?, net_tx=?, net_in_speed=?, net_out_speed=?, os=?, cpu_info=?, arch=?, boot_time=?, ram_used=?, swap_total=?, swap_used=?, disk_total=?, disk_used=?, processes=?, tcp_conn=?, udp_conn=?, ping_ct=?, ping_cu=?, ping_cm=?, ping_bd=?, monthly_rx=?, monthly_tx=?, last_rx=?, last_tx=?, reset_month=?, history=?, virt=? WHERE id=?`)
-                    .bind(data.cpu||0, data.mem||0, data.disk||0, data.load||'', data.uptime||'', nowMs, data.ram_total||'0', data.net_rx||'0', data.net_tx||'0', data.net_in_speed||0, data.net_out_speed||0, data.os||'', data.cpu_info||'', data.arch||'', data.boot_time||'', data.ram_used||'0', data.swap_total||'0', data.swap_used||'0', data.disk_total||'0', data.disk_used||'0', data.processes||'0', data.tcp_conn||0, data.udp_conn||0, data.ping_ct||'0', data.ping_cu||'0', data.ping_cm||'0', data.ping_bd||'0', monthly_rx.toString(), monthly_tx.toString(), last_rx.toString(), last_tx.toString(), reset_month, JSON.stringify(history), data.virt||'', vpsIp).run();
+            await db.prepare(`UPDATE probe_servers SET cpu=?, ram=?, disk=?, load_avg=?, uptime=?, last_updated=?, ram_total=?, net_rx=?, net_tx=?, net_in_speed=?, net_out_speed=?, os=?, cpu_info=?, arch=?, boot_time=?, ram_used=?, swap_total=?, swap_used=?, disk_total=?, disk_used=?, processes=?, tcp_conn=?, udp_conn=?, ping_ct=?, ping_cu=?, ping_cm=?, ping_bd=?, monthly_rx=CASE WHEN last_report_id=? THEN monthly_rx ELSE ? END, monthly_tx=CASE WHEN last_report_id=? THEN monthly_tx ELSE ? END, last_rx=CASE WHEN last_report_id=? THEN last_rx ELSE ? END, last_tx=CASE WHEN last_report_id=? THEN last_tx ELSE ? END, reset_month=?, history=?, virt=?, last_report_id=? WHERE id=?`)
+                    .bind(data.cpu||0, data.mem||0, data.disk||0, data.load||'', data.uptime||'', nowMs, data.ram_total||'0', data.net_rx||'0', data.net_tx||'0', data.net_in_speed||0, data.net_out_speed||0, data.os||'', data.cpu_info||'', data.arch||'', data.boot_time||'', data.ram_used||'0', data.swap_total||'0', data.swap_used||'0', data.disk_total||'0', data.disk_used||'0', data.processes||'0', data.tcp_conn||0, data.udp_conn||0, data.ping_ct||'0', data.ping_cu||'0', data.ping_cm||'0', data.ping_bd||'0', data.report_id, monthly_rx.toString(), data.report_id, monthly_tx.toString(), data.report_id, last_rx.toString(), data.report_id, last_tx.toString(), reset_month, JSON.stringify(history), data.virt||'', data.report_id, vpsIp).run();
 
         } catch (e) { console.error("探针数据同步失败:", e); }
 
         const stmts = []; let totalDelta = 0;
+        if (!duplicateReport) stmts.push(db.prepare("INSERT OR IGNORE INTO report_receipts (report_id, vps_ip, created_at, applied) VALUES (?, ?, ?, 0)").bind(data.report_id, vpsIp, nowMs));
         if (!duplicateReport && data.node_traffic && data.node_traffic.length > 0) {
-            for (let nt of data.node_traffic) { 
-                stmts.push(db.prepare("UPDATE nodes SET traffic_used = traffic_used + ? WHERE id = ?").bind(nt.delta_bytes, nt.id)); 
-                stmts.push(db.prepare(`UPDATE users SET traffic_used = traffic_used + ? WHERE username = (SELECT username FROM nodes WHERE id = ?)`).bind(nt.delta_bytes, nt.id)); 
-                totalDelta += nt.delta_bytes; 
-            } 
+            const traffic = data.node_traffic.filter(nt => nt && typeof nt.id === 'string' && Number.isFinite(Number(nt.delta_bytes)) && Number(nt.delta_bytes) > 0);
+            if (traffic.length > 200) return Response.json({ error: "too many traffic entries" }, { status: 413 });
+            if (traffic.length) {
+                const trafficJson = JSON.stringify(traffic.map(nt => ({ id: nt.id, bytes: Number(nt.delta_bytes) })));
+                const deltaCte = `WITH deltas(id, bytes) AS (SELECT json_extract(value, '$.id'), CAST(json_extract(value, '$.bytes') AS INTEGER) FROM json_each(?))`;
+                stmts.push(db.prepare(`${deltaCte} UPDATE nodes SET traffic_used = traffic_used + COALESCE((SELECT SUM(bytes) FROM deltas WHERE deltas.id = nodes.id), 0) WHERE id IN (SELECT id FROM deltas) AND EXISTS (SELECT 1 FROM report_receipts WHERE report_id = ? AND applied = 0)`).bind(trafficJson, data.report_id));
+                stmts.push(db.prepare(`${deltaCte}, user_deltas(username, bytes) AS (SELECT n.username, SUM(d.bytes) FROM deltas d JOIN nodes n ON n.id = d.id GROUP BY n.username) UPDATE users SET traffic_used = traffic_used + COALESCE((SELECT bytes FROM user_deltas WHERE user_deltas.username = users.username), 0) WHERE username IN (SELECT username FROM user_deltas) AND EXISTS (SELECT 1 FROM report_receipts WHERE report_id = ? AND applied = 0)`).bind(trafficJson, data.report_id));
+                totalDelta = traffic.reduce((sum, nt) => sum + Number(nt.delta_bytes), 0);
+            }
         }
         if (data.argo_urls && data.argo_urls.length > 0) { for (let argo of data.argo_urls) { stmts.push(db.prepare("UPDATE nodes SET sni = ? WHERE id = ? AND protocol = 'VLESS-Argo' AND sni != ?").bind(argo.url, argo.id, argo.url)); } }
-        if (!duplicateReport && totalDelta > 0) { stmts.push(db.prepare("INSERT INTO traffic_stats (ip, delta_bytes, timestamp) VALUES (?, ?, ?)").bind(vpsIp, totalDelta, nowMs)); }
+        if (!duplicateReport && totalDelta > 0) stmts.push(db.prepare("INSERT INTO traffic_stats (ip, delta_bytes, timestamp) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM report_receipts WHERE report_id = ? AND applied = 0)").bind(vpsIp, totalDelta, nowMs, data.report_id));
+        if (!duplicateReport) stmts.push(db.prepare("UPDATE report_receipts SET applied = 1 WHERE report_id = ? AND applied = 0").bind(data.report_id));
         if (stmts.length > 0) {
-            try { await chunkBatch(db, stmts); }
-            catch (error) {
-                if (data.report_id && !duplicateReport) await db.prepare("DELETE FROM report_receipts WHERE report_id = ?").bind(data.report_id).run().catch(() => {});
-                throw error;
-            }
+            await db.batch(stmts);
         }
         context.waitUntil(db.prepare("DELETE FROM report_receipts WHERE created_at < ?").bind(nowMs - 604800000).run().catch(() => {}));
         
@@ -885,6 +936,8 @@ export async function onRequest(context) {
     // 🌟 住宅IP代理：优先外部控制器 (PROXY_CTRL_URL)；未配置时回落到本地 D1 实现
     if (action === "proxy") {
         const sub = params.path && params.path.length > 1 ? params.path.slice(1).join('/') : '';
+        const allowedProxyPaths = sub === 'config' || sub === 'report' || sub === 'proxies' || sub === 'nodes' || sub === 'countries' || sub === 'pool' || sub === 'switch' || sub.startsWith('testisp-lookup/');
+        if (!allowedProxyPaths || sub.includes('..')) return new Response('Not Found', { status: 404 });
         if (sub === "mesh" || sub.startsWith("mesh/")) {
             return new Response(JSON.stringify({ error: "mesh is not supported" }), { status: 404, headers: { 'Content-Type': 'application/json' } });
         }
@@ -894,9 +947,10 @@ export async function onRequest(context) {
         } else if ((sub === 'config' && method === 'GET') || (sub === 'proxies' && method === 'GET')) {
             const requestIp = new URL(request.url).searchParams.get('ip');
             const user = await verifyAuth(request.headers.get('Authorization'), db, env);
-            if (!user && !(await verifyAgent(request.headers.get('Authorization'), requestIp, db, env))) return new Response('Unauthorized', { status: 401 });
-        } else if (!(await verifyAuth(request.headers.get('Authorization'), db, env))) {
-            return new Response('Unauthorized', { status: 401 });
+            if (user !== (env.ADMIN_USERNAME || 'admin') && !(await verifyAgent(request.headers.get('Authorization'), requestIp, db, env))) return new Response('Forbidden', { status: 403 });
+        } else {
+            const user = await verifyAuth(request.headers.get('Authorization'), db, env);
+            if (user !== (env.ADMIN_USERNAME || 'admin')) return new Response('Forbidden', { status: 403 });
         }
         return await proxyBridge(method, sub, request, env);
     }
@@ -912,9 +966,9 @@ export async function onRequest(context) {
 
         let isValid = false;
         if (reqUser === adminUser) { 
-            let adminSubToken = await sha256(env.ADMIN_PASSWORD || "admin"); 
+            let adminSubToken = '';
             try { const r = await db.prepare("SELECT val FROM sys_config WHERE key='admin_sub_token'").first(); if(r && r.val) adminSubToken = r.val; } catch(e){} 
-            isValid = (token === adminSubToken) || (token === await sha256(env.ADMIN_PASSWORD || "admin")); 
+            isValid = !!adminSubToken && token === adminSubToken;
         } 
         else { 
             const u = await db.prepare("SELECT password, sub_token FROM users WHERE username = ?").bind(reqUser).first(); 
@@ -1026,10 +1080,10 @@ export async function onRequest(context) {
                     case "gRPC-Reality": link = `vless://${node.uuid}@${thirdIp}:${node.port}?encryption=none&security=reality&sni=${thirdSni}&fp=chrome&pbk=${node.public_key}&sid=${node.short_id || ""}&type=grpc&serviceName=grpc#${remark}`; break;
                     case "AnyTLS": link = `anytls://${node.password}@${thirdIp}:${node.port}?security=tls&sni=${thirdSni}&insecure=1#${remark}`; break;
                     case "Naive": link = `naive+https://${node.uuid}:${node.password}@${thirdIp}:${node.port}?security=tls&sni=${thirdSni}#${remark}`; break;
-                    case "Socks5": link = `socks5://${btoa(`${node.uuid}:${node.password}`)}@${thirdIp}:${node.port}#${remark}`; break;
+                    case "Socks5": link = `socks5://${btoa(unescape(encodeURIComponent(`${node.uuid}:${node.password}`)))}@${thirdIp}:${node.port}#${remark}`; break;
                     case "SS": {
                         const method = node.uuid || (() => { try { return JSON.parse(node.extra || '{}').method; } catch(e) { return ''; } })();
-                        link = `ss://${btoa(`${method}:${node.password}`)}@${thirdIp}:${node.port}#${remark}`;
+                        link = `ss://${btoa(unescape(encodeURIComponent(`${method}:${node.password}`)))}@${thirdIp}:${node.port}#${remark}`;
                         break;
                     }
                     case "SSR": link = `ssr://${btoa(unescape(encodeURIComponent(`${thirdIp}:${node.port}:origin:${node.uuid}:plain:${btoa(node.password || '')}/?remarks=${btoa(unescape(encodeURIComponent(node.name || 'SSR')))}`)))}`; break;
@@ -1044,7 +1098,7 @@ export async function onRequest(context) {
                         const isReality = (node.flow && node.flow.includes('rprx')) || node.protocol === "XTLS-Reality" || node.protocol === "Reality";
                         cProxy = `  - name: ${yamlString(node.name || 'TP')}\n    type: vless\n    server: ${yamlString(thirdIp)}\n    port: ${node.port}\n    uuid: ${yamlString(node.uuid)}\n    udp: true`;
                         if (isReality) {
-                            cProxy += `\n    tls: true\n    servername: ${thirdSni}\n    client-fingerprint: chrome\n    reality-opts:\n      public-key: ${node.public_key || ''}\n      short-id: ${node.short_id || ""}`;
+                            cProxy += `\n    tls: true\n    servername: ${yamlString(thirdSni)}\n    client-fingerprint: chrome\n    reality-opts:\n      public-key: ${yamlString(node.public_key || '')}\n      short-id: ${yamlString(node.short_id || "")}`;
                             if (((node.protocol === "Reality" || node.protocol === "XTLS-Reality") && node.flow && node.flow.includes('rprx')) || node.protocol === "VLESS") {
                                 cProxy += `\n    flow: ${node.flow || 'xtls-rprx-vision'}`;
                             }
@@ -1054,16 +1108,16 @@ export async function onRequest(context) {
                             } else if (net === 'http') {
                                 const path = node.path || '/';
                                 const hostHeader = node.host || thirdSni || thirdIp;
-                                cProxy += `\n    network: h2\n    h2-opts:\n      host:\n        - ${hostHeader}\n      path: "${path}"`;
+                                cProxy += `\n    network: h2\n    h2-opts:\n      host:\n        - ${yamlString(hostHeader)}\n      path: ${yamlString(path)}`;
                             } else if (net === 'ws') {
                                 const path = node.path || '/';
                                 const hostHeader = node.host || thirdSni || thirdIp;
-                                cProxy += `\n    network: ws\n    ws-opts:\n      path: "${path}"\n      headers:\n        Host: ${hostHeader}`;
+                                cProxy += `\n    network: ws\n    ws-opts:\n      path: ${yamlString(path)}\n      headers:\n        Host: ${yamlString(hostHeader)}`;
                             }
                         } else if (node.protocol === "gRPC-Reality") {
-                            cProxy += `\n    tls: true\n    servername: ${thirdSni}\n    client-fingerprint: chrome\n    network: grpc\n    grpc-opts:\n      grpc-service-name: grpc\n    reality-opts:\n      public-key: ${node.public_key}\n      short-id: ${node.short_id || ""}`;
+                            cProxy += `\n    tls: true\n    servername: ${yamlString(thirdSni)}\n    client-fingerprint: chrome\n    network: grpc\n    grpc-opts:\n      grpc-service-name: grpc\n    reality-opts:\n      public-key: ${yamlString(node.public_key)}\n      short-id: ${yamlString(node.short_id || "")}`;
                          } else if (node.protocol === "H2-Reality") {
-                             cProxy += `\n    tls: true\n    servername: ${thirdSni}\n    client-fingerprint: chrome\n    network: h2\n    h2-opts:\n      host:\n        - ${thirdSni || thirdIp}\n      path: "/"`;
+                             cProxy += `\n    tls: true\n    servername: ${yamlString(thirdSni)}\n    client-fingerprint: chrome\n    network: h2\n    h2-opts:\n      host:\n        - ${yamlString(thirdSni || thirdIp)}\n      path: "/"`;
                         }
                     } else if (node.protocol === "Trojan") {
                         cProxy = `  - name: ${yamlString(node.name || 'TP')}\n    type: trojan\n    server: ${yamlString(thirdIp)}\n    port: ${node.port}\n    password: ${yamlString(node.password)}\n    udp: true\n    sni: ${yamlString(thirdSni)}\n    skip-cert-verify: true`;
@@ -1085,8 +1139,9 @@ export async function onRequest(context) {
 
         // --- 住宅IP代理 SOCKS5 节点整合进订阅 ---
         try {
-            const proxyUser = env.PROXY_USER || 'proxy';
-            const proxyPass = env.PROXY_PASS || '888888';
+            const proxyUser = env.PROXY_USER || '';
+            const proxyPass = env.PROXY_PASS || '';
+            if (!proxyUser || !proxyPass) throw new Error('PROXY_USER and PROXY_PASS must be configured');
             const cutoff = Date.now() - 120000;
             const { results: proxyServers } = await db.prepare('SELECT ip, details FROM proxy_ctrl_servers WHERE last_seen > ?').bind(cutoff).all();
             if (proxyServers) {
@@ -1180,7 +1235,13 @@ rules:
             const users = isAdmin ? (await db.prepare("SELECT * FROM users").all()).results : (await db.prepare("SELECT * FROM users WHERE username = ?").bind(currentUser).all()).results;
             let siteTitle = "Cluster Gateway"; try { const r = await db.prepare("SELECT val FROM sys_config WHERE key='site_title'").first(); if(r && r.val) siteTitle = r.val; } catch(e){}
             let mySubToken = "";
-            if (isAdmin) { try { const r = await db.prepare("SELECT val FROM sys_config WHERE key='admin_sub_token'").first(); if(r && r.val) mySubToken = r.val; } catch(e){} } 
+            if (isAdmin) {
+                try {
+                    const r = await db.prepare("SELECT val FROM sys_config WHERE key='admin_sub_token'").first();
+                    if (r && r.val) mySubToken = r.val;
+                    else { mySubToken = crypto.randomUUID(); await db.prepare("INSERT OR REPLACE INTO sys_config (key, val, ts) VALUES ('admin_sub_token', ?, ?)").bind(mySubToken, Date.now()).run(); }
+                } catch(e){}
+            }
             else { const u = await db.prepare("SELECT sub_token FROM users WHERE username = ?").bind(currentUser).first(); if(u && u.sub_token) mySubToken = u.sub_token; }
             return Response.json({ servers, nodes, users, siteTitle, mySubToken });
         }
@@ -1201,7 +1262,7 @@ rules:
             if (method === "PUT") { const data = await request.json(); const ip = data.ip; if (!ip) return Response.json({ error: "IP required" }, { status: 400 }); const updates = []; const params = []; if (data.socks5_enable !== undefined) { updates.push("socks5_enable = ?"); params.push(data.socks5_enable ? 1 : 0); } if (data.socks5_addr !== undefined) { updates.push("socks5_addr = ?"); params.push(data.socks5_addr); } if (data.socks5_port !== undefined) { updates.push("socks5_port = ?"); params.push(parseInt(data.socks5_port) || 0); } if (data.socks5_user !== undefined) { updates.push("socks5_user = ?"); params.push(data.socks5_user); } if (data.socks5_pass !== undefined) { updates.push("socks5_pass = ?"); params.push(data.socks5_pass); } if (data.socks5_mode !== undefined) { updates.push("socks5_mode = ?"); params.push(data.socks5_mode); } if (data.socks5_domains !== undefined) { updates.push("socks5_domains = ?"); params.push(data.socks5_domains); } if (updates.length > 0) { params.push(ip); await db.prepare(`UPDATE servers SET ${updates.join(', ')} WHERE ip = ?`).bind(...params).run(); } return Response.json({ success: true }); }
             if (method === "DELETE") { 
                 const ip = new URL(request.url).searchParams.get("ip"); 
-                await db.batch([ db.prepare("DELETE FROM nodes WHERE vps_ip = ?").bind(ip), db.prepare("DELETE FROM traffic_stats WHERE ip = ?").bind(ip), db.prepare("DELETE FROM servers WHERE ip = ?").bind(ip), db.prepare("DELETE FROM probe_servers WHERE id = ?").bind(ip) ]); 
+                await db.batch([ db.prepare("DELETE FROM nodes WHERE vps_ip = ?").bind(ip), db.prepare("DELETE FROM traffic_stats WHERE ip = ?").bind(ip), db.prepare("DELETE FROM servers WHERE ip = ?").bind(ip), db.prepare("DELETE FROM probe_servers WHERE id = ?").bind(ip), db.prepare("DELETE FROM proxy_ctrl_servers WHERE ip = ?").bind(ip), db.prepare("DELETE FROM server_logs WHERE ip = ?").bind(ip), db.prepare("DELETE FROM probe_settings WHERE key = ?").bind(`proxy_slot_map_${ip}`) ]);
                 return Response.json({ success: true }); 
             }
         }
@@ -1212,11 +1273,14 @@ rules:
             if (method === "DELETE") { await db.prepare("DELETE FROM nodes WHERE id = ?").bind(new URL(request.url).searchParams.get("id")).run(); return Response.json({ success: true }); }
         }
 
-        if (action === "thirdparty" && isAdmin) {
+    if (action === "thirdparty" && isAdmin) {
             await ensureDbSchema(db);
             if (method === "POST") {
                 const { name, url } = await request.json();
                 if (!url) return Response.json({ error: "请填写订阅链接" }, { status: 400 });
+                let subscriptionUrl;
+                try { subscriptionUrl = new URL(url); } catch (error) { return Response.json({ error: "订阅链接格式无效" }, { status: 400 }); }
+                if (!['http:', 'https:'].includes(subscriptionUrl.protocol)) return Response.json({ error: "仅支持 HTTP/HTTPS 订阅" }, { status: 400 });
                 const id = crypto.randomUUID();
                 const now = Date.now();
                 await db.prepare("INSERT INTO third_party_subscriptions (id, name, url, added_at, last_fetched_at) VALUES (?, ?, ?, ?, ?)" ).bind(id, name || '第三方订阅', url, now, now).run();
@@ -1264,19 +1328,5 @@ rules:
 }
 
 export async function onRequestScheduled(context) {
-    const { env } = context; const db = env.DB; const nowMs = Date.now();
-    try {
-        const { results } = await db.prepare(`SELECT ip, name, last_report FROM servers WHERE last_report < ? AND alert_sent = 0`).bind(nowMs - 180000).all();
-        if (results && results.length > 0) {
-            let tgBotToken = env.TG_BOT_TOKEN; let tgChatId = env.TG_CHAT_ID;
-            try { const { results: settings } = await db.prepare("SELECT key, value FROM probe_settings WHERE key IN ('tg_bot_token', 'tg_chat_id')").all(); settings.forEach(r => { if(r.key === 'tg_bot_token') tgBotToken = r.value; if(r.key === 'tg_chat_id') tgChatId = r.value; }); } catch(e){}
-            
-            const updateStmts = [];
-            for (let vps of results) {
-                if (tgBotToken && tgChatId) { const text = `⚠️ [KUI 节点失联告警]\n\n节点别名: ${vps.name}\n公网IP: ${vps.ip}\n最后在线: ${new Date(vps.last_report).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`; await fetch(`https://api.telegram.org/bot${tgBotToken}/sendMessage`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ chat_id: tgChatId, text }) }); }
-                updateStmts.push(db.prepare("UPDATE servers SET alert_sent = 1 WHERE ip = ?").bind(vps.ip));
-            }
-            if (updateStmts.length > 0) await chunkBatch(db, updateStmts);
-        }
-    } catch (error) {}
+    try { await checkOfflineServers(context.env); } catch (error) {}
 }

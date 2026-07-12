@@ -7,12 +7,14 @@ set -eu
 # 支持: Ubuntu 18-24 / Debian 10-13 / Alpine Linux
 # ==========================================
 
+API_URL=""; VPS_IP=""; TOKEN=""; PROXY_API_URL=""
+
 while [ "$#" -gt 0 ]; do
     case $1 in
-        --api) API_URL="$2"; shift ;;
-        --ip) VPS_IP="$2"; shift ;;
-        --token) TOKEN="$2"; shift ;;
-        --proxy-api) PROXY_API_URL="$2"; shift ;;
+        --api) [ "$#" -ge 2 ] || { echo "--api 缺少参数"; exit 1; }; API_URL="$2"; shift ;;
+        --ip) [ "$#" -ge 2 ] || { echo "--ip 缺少参数"; exit 1; }; VPS_IP="$2"; shift ;;
+        --token) [ "$#" -ge 2 ] || { echo "--token 缺少参数"; exit 1; }; TOKEN="$2"; shift ;;
+        --proxy-api) [ "$#" -ge 2 ] || { echo "--proxy-api 缺少参数"; exit 1; }; PROXY_API_URL="$2"; shift ;;
         *) echo "未知参数: $1"; exit 1 ;;
     esac
     shift
@@ -45,54 +47,31 @@ export CURL_USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/53
 
 echo "[1/6] 🧹 正在清理历史残留..."
 if [ "$OS" = "alpine" ]; then
-    rc-service kui-agent stop >/dev/null 2>&1
-    rc-service sing-box stop >/dev/null 2>&1
-    rc-update del kui-agent default >/dev/null 2>&1
-    rc-update del sing-box default >/dev/null 2>&1
+    rc-service kui-agent stop >/dev/null 2>&1 || true
+    rc-service sing-box stop >/dev/null 2>&1 || true
+    rc-update del kui-agent default >/dev/null 2>&1 || true
+    rc-update del sing-box default >/dev/null 2>&1 || true
     rm -f /etc/init.d/kui-agent /etc/init.d/sing-box
 else
-    systemctl stop kui-agent >/dev/null 2>&1
-    systemctl stop sing-box >/dev/null 2>&1
+    systemctl stop kui-agent >/dev/null 2>&1 || true
+    systemctl stop sing-box >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/kui-agent.service
-    systemctl daemon-reload >/dev/null 2>&1
+    systemctl daemon-reload >/dev/null 2>&1 || true
 fi
 rm -rf /opt/kui /etc/sing-box/config.json
 
-echo "[2/6] ⚡ 正在强制配置阿里云镜像源..."
+echo "[2/6] ⚡ 保留系统现有软件源..."
 if [ "$OS" = "alpine" ]; then
-    sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories
+    :
 else
-    if [ -f /etc/apt/sources.list ]; then
-        mv /etc/apt/sources.list /etc/apt/sources.list.bak
-    fi
-    case "$OS" in
-        debian)
-            DEB_VERSION="${VERSION_CODENAME:-bookworm}"
-            cat > /etc/apt/sources.list <<EOF
-deb http://mirrors.aliyun.com/debian ${DEB_VERSION} main contrib non-free non-free-firmware
-deb http://mirrors.aliyun.com/debian ${DEB_VERSION}-updates main contrib non-free non-free-firmware
-deb http://mirrors.aliyun.com/debian-security ${DEB_VERSION}-security main contrib non-free non-free-firmware
-EOF
-            ;;
-        ubuntu)
-            UBUNTU_CODENAME="${VERSION_CODENAME:-jammy}"
-            cat > /etc/apt/sources.list <<EOF
-deb http://mirrors.aliyun.com/ubuntu ${UBUNTU_CODENAME} main restricted universe multiverse
-deb http://mirrors.aliyun.com/ubuntu ${UBUNTU_CODENAME}-updates main restricted universe multiverse
-deb http://mirrors.aliyun.com/ubuntu ${UBUNTU_CODENAME}-security main restricted universe multiverse
-EOF
-            ;;
-        *)
-            [ -f /etc/apt/sources.list.bak ] && mv /etc/apt/sources.list.bak /etc/apt/sources.list
-            ;;
-    esac
-    [ -d /etc/apt/sources.list.d ] && rm -f /etc/apt/sources.list.d/*.list
+    :
 fi
 
 echo "[3/6] 📦 正在安装底层网络依赖..."
 ALIYUN_OK=0
 if [ "$OS" = "alpine" ]; then
-    apk update && apk add python3 curl openssl iptables ip6tables coreutils bash tar libc6-compat gcompat iproute2 && ALIYUN_OK=1 || true
+    apk update || echo "⚠️ apk update 失败，尝试使用现有缓存安装。"
+    apk add python3 curl openssl iptables ip6tables coreutils bash tar libc6-compat gcompat iproute2
 else
     if apt-get update -y >/tmp/kui_apt_update.log 2>&1; then
         cat /tmp/kui_apt_update.log
@@ -120,9 +99,18 @@ case "$ARCH" in
     *) echo "不支持的 CPU 架构: $ARCH"; exit 1 ;;
 esac
 SB_VER="1.13.14"
-SB_SUFFIX="linux-${SB_ARCH}"
+SB_SUFFIX="linux-${SB_ARCH}-glibc"
 [ "$OS" = "alpine" ] && SB_SUFFIX="linux-${SB_ARCH}-musl"
 curl -fL --retry 3 -o sing-box.tar.gz -A "$CURL_USER_AGENT" "https://github.com/SagerNet/sing-box/releases/download/v${SB_VER}/sing-box-${SB_VER}-${SB_SUFFIX}.tar.gz"
+case "$SB_SUFFIX" in
+    linux-amd64-glibc) EXPECTED_SHA="aae9172317c61760aae3dafcde889b2e51b7ea590c40d2b3c7ccdeae14b361b6" ;;
+    linux-amd64-musl) EXPECTED_SHA="d5b46de6498427bccfeb87dbafcde4dbefdfe35680020d07d286ad915f0bfb34" ;;
+    linux-arm64-glibc) EXPECTED_SHA="08d37b2bf12145ec44307333490cecca4c917df054cd8e27a210f8d9cdbe0fd9" ;;
+    linux-arm64-musl) EXPECTED_SHA="edec18488af35a93cf8b362063146fdd7b557ef9862710ee77a1f4adb5c70118" ;;
+    *) echo "❌ 不支持的 sing-box 构建: $SB_SUFFIX"; exit 1 ;;
+esac
+ACTUAL_SHA=$(sha256sum sing-box.tar.gz | awk '{print $1}')
+[ "$ACTUAL_SHA" = "$EXPECTED_SHA" ] || { echo "❌ sing-box SHA256 校验失败"; exit 1; }
 tar -xzf sing-box.tar.gz
 test -x "sing-box-${SB_VER}-${SB_SUFFIX}/sing-box"
 mv "sing-box-${SB_VER}-${SB_SUFFIX}/sing-box" /usr/bin/
@@ -131,8 +119,8 @@ rm -rf sing-box.tar.gz "sing-box-${SB_VER}-${SB_SUFFIX}"
 
 echo "[4.5/6] ⚙️ 正在应用网络内核调优（BBR / QUIC / conntrack）..."
 if [ "$OS" = "alpine" ]; then
-    modprobe -q xt_conntrack 2>/dev/null
-    sysctl -w net.netfilter.nf_conntrack_max=1048576 >/dev/null 2>&1
+    modprobe -q xt_conntrack 2>/dev/null || true
+    sysctl -w net.netfilter.nf_conntrack_max=1048576 >/dev/null 2>&1 || true
 else
     cat > /etc/sysctl.d/99-kui-optimize.conf <<'SYSCTL'
 net.core.default_qdisc = fq
@@ -147,7 +135,7 @@ net.netfilter.nf_conntrack_udp_timeout = 60
 net.netfilter.nf_conntrack_tcp_timeout_established = 7200
 net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
 SYSCTL
-    sysctl --system >/dev/null 2>&1
+    sysctl --system >/dev/null 2>&1 || echo "⚠️ 部分内核参数无法应用，继续安装。"
 fi
 
 echo "[5/6] 📂 初始化 KUI 工作目录与环境..."
@@ -158,23 +146,15 @@ chmod 600 /opt/kui/config.json
 
 echo "正在拉取最新版 Agent 执行器..."
 AGENT_URL="${API_URL}/vps/agent.py"
-BACKUP_URL="https://raw.githubusercontent.com/a62169722/KUI/main/vps/agent.py"
 # 校验下载内容确实是 Python（含 import 且不是 GitHub 429/HTML 错误页）
 is_valid_py() { [ -s "$1" ] && grep -q "import " "$1" && ! grep -qiE "429|too many requests|<html" "$1"; }
-fetch_agent() { curl -sL --retry 3 --retry-delay 2 -A "$CURL_USER_AGENT" "$1" -o /opt/kui/agent.py; }
+fetch_agent() { curl -fsSL --retry 3 --retry-delay 2 -A "$CURL_USER_AGENT" "$1" -o /opt/kui/agent.py; }
 rm -f /opt/kui/agent.py
 fetch_agent "$AGENT_URL"
 if ! is_valid_py /opt/kui/agent.py; then
-    echo "⚠️ 主源（面板）下载异常（可能未部署 vps/agent.py 或限流），尝试备用源..."
-    fetch_agent "$BACKUP_URL"
+    echo "❌ 下载 agent.py 失败：请确认面板已部署 /vps/agent.py。"; exit 1;
 fi
-if ! is_valid_py /opt/kui/agent.py; then
-    echo "⏳ 备用源疑似限流，等待 8s 后重试..."
-    sleep 8; fetch_agent "$BACKUP_URL"
-fi
-if ! is_valid_py /opt/kui/agent.py; then
-    echo "❌ 下载 agent.py 失败：请确认已在 Cloudflare Pages 部署本仓库（使 /vps/agent.py 可访问），或稍后避开 GitHub 限流再试。"; exit 1;
-fi
+python3 -m py_compile /opt/kui/agent.py
 chmod 700 /opt/kui/agent.py
 
 echo "[6/6] 🛡️ 智能注册底层守护进程并启动..."

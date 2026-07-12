@@ -12,8 +12,15 @@ WORKSPACE = Path("/opt/proxy_lite")
 CONFIG_DIR = WORKSPACE / "configs"
 AUTH_FILE = WORKSPACE / "auth.txt"
 
-WEB_USER = os.environ.get("WEB_USER", "admin")
-WEB_PASS = os.environ.get("WEB_PASS", "admin888")
+def env_secret(name, default=""):
+    encoded = os.environ.get(name + "_B64")
+    if encoded:
+        try: return base64.b64decode(encoded).decode("utf-8")
+        except Exception: return default
+    return os.environ.get(name, default)
+
+WEB_USER = env_secret("WEB_USER", "admin")
+WEB_PASS = env_secret("WEB_PASS")
 AGENT_TOKEN = os.environ.get("AGENT_TOKEN", "")
 VPS_IP = os.environ.get("VPS_IP", "")
 
@@ -125,8 +132,8 @@ def update_config_loop():
             try:
                 pc = data.get("proxy") or {}
                 if isinstance(pc, dict):
-                    pu = str(pc.get("user", "")) or os.environ.get("PROXY_USER", "proxy")
-                    pp = str(pc.get("pass", "")) or os.environ.get("PROXY_PASS", "888888")
+                    pu = str(pc.get("user", "")) or env_secret("PROXY_USER")
+                    pp = str(pc.get("pass", "")) or env_secret("PROXY_PASS")
                     os.environ["PROXY_USER"] = pu
                     os.environ["PROXY_PASS"] = pp
                     if hasattr(proxy_server, "set_credentials"):
@@ -442,9 +449,8 @@ def get_best_candidate():
         all_pool_nodes = sorted(list(global_node_reservoir.values()), key=lambda x: x["ping"])
         candidates = [n for n in all_pool_nodes if n["country"] == target_country and n["ip"] not in dead_ips]
         
-        active_ips = []
-        if tun_main.entry_ip: active_ips.append(tun_main.entry_ip)
-        if tun_backup.entry_ip: active_ips.append(tun_backup.entry_ip)
+        with state_lock:
+            active_ips = [ip for ip in (tun_main.entry_ip, tun_backup.entry_ip) if ip]
         candidates = [n for n in candidates if n["ip"] not in active_ips]
 
         if not candidates:
@@ -540,7 +546,12 @@ def main():
     threading.Thread(target=vpngate_fetch_loop, daemon=True).start()
     threading.Thread(target=update_config_loop, daemon=True).start()
     # 启用全局 IPv6 ANY 监听
-    threading.Thread(target=proxy_server.start_proxy_server, args=("::", PROXY_PORT), daemon=True).start()
+    def run_proxy_server():
+        try:
+            proxy_server.start_proxy_server("::", PROXY_PORT)
+        except Exception as error:
+            print(f"[proxy] listener stopped: {error}; tunnel manager remains online", flush=True)
+    threading.Thread(target=run_proxy_server, daemon=True).start()
     threading.Thread(target=health_check_loop, daemon=True).start()
     threading.Thread(target=c2_heartbeat_loop, daemon=True).start()
     maintain_pool()

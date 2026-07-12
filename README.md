@@ -154,8 +154,10 @@ DEV修复情况
    | `ADMIN_PASSWORD` | 后台登录密码 | `admin` | ✅ |
    | `TG_BOT_TOKEN` | Telegram 机器人 Token | - | ❌ |
    | `TG_CHAT_ID` | 接收告警的 Telegram Chat ID | - | ❌ |
-   | `PROXY_USER` | 住宅代理面板登录账号 | `admin` | ❌ |
-   | `PROXY_PASS` | 住宅代理面板登录密码 | `admin888` | ❌ |
+   | `TG_WEBHOOK_SECRET` | Telegram Webhook 校验密钥，启用 TG 管理时必填 | - | ❌ |
+   | `CRON_SECRET` | 外部定时任务调用 `/api/cron_check` 的 Bearer 密钥 | - | ❌ |
+   | `PROXY_USER` | 住宅 SOCKS5 用户名，启用住宅代理时必须显式配置 | - | ❌ |
+   | `PROXY_PASS` | 住宅 SOCKS5 强密码，启用住宅代理时必须显式配置 | - | ❌ |
 
 > ⚠️ **安全提示**：部署完成后请立即修改默认密码！
 
@@ -206,7 +208,7 @@ bash <(curl -sL --ipv4 https://您的域名/vps/kui.sh) \
   --token 您的Token
 
 # Alpine Linux
-bash <(curl -sL --ipv4 https://您的域名/vps/kui.sh) \
+curl -fsSL --ipv4 https://您的域名/vps/kui.sh | sh -s -- \
   --api https://您的域名 \
   --ip 1.2.3.4 \
   --token 您的Token
@@ -214,7 +216,7 @@ bash <(curl -sL --ipv4 https://您的域名/vps/kui.sh) \
 
 安装脚本会自动完成以下操作：
 - 清理历史残留进程
-- 配置阿里云镜像源（加速安装）
+- 保留并使用系统现有软件源
 - 安装底层网络依赖（Python3、curl、iptables 等）
 - 部署 Sing-box 代理核心
 - 初始化 KUI 工作目录
@@ -224,6 +226,8 @@ bash <(curl -sL --ipv4 https://您的域名/vps/kui.sh) \
 ### 4. 验证接入
 
 安装完成后约 10-30 秒，您的机器会自动出现在全景探针大盘中并开始上报数据。
+
+> Pages Functions 不直接运行 Cron Trigger。需要离线告警时，请让 Cloudflare Worker Cron、UptimeRobot 或其他定时服务每分钟 `POST https://您的域名/api/cron_check`，并携带请求头 `Authorization: Bearer <CRON_SECRET>`。
 
 您可以直接在面板使用 **🚀 爆发下发** 功能，10 秒内部署 8 大节点阵列！
 
