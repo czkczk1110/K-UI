@@ -13,6 +13,7 @@ import platform
 import tempfile
 import shutil
 import hashlib
+import threading
 from datetime import datetime
 
 # 强制系统编码锁
@@ -104,7 +105,7 @@ def check_for_update():
         with open(temp_path, "wb") as update_file:
             update_file.write(source)
         os.chmod(temp_path, 0o700)
-        checked = subprocess.run([sys.executable, "-m", "py_compile", temp_path], capture_output=True, text=True)
+        checked = subprocess.run([sys.executable, "-m", "py_compile", temp_path], capture_output=True, text=True, timeout=30)
         if checked.returncode != 0:
             raise ValueError(f"agent update compile failed: {checked.stderr.strip()}")
         os.replace(temp_path, os.path.abspath(__file__))
@@ -131,6 +132,13 @@ pending_node_traffic = None
 # --- 缓存静态信息 ---
 cached_os = cached_arch = cached_cpu_info = cached_virt = None
 
+def run_text(command, timeout=5):
+    try:
+        result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=timeout)
+        return result.stdout.strip()
+    except Exception:
+        return ""
+
 def get_static_sysinfo():
     global cached_os, cached_arch, cached_cpu_info, cached_virt
     if not cached_os:
@@ -140,8 +148,8 @@ def get_static_sysinfo():
                     if line.startswith('PRETTY_NAME='):
                         cached_os = line.split('=')[1].strip().strip('"')
                         break
-        except: cached_os = os.popen('uname -srm').read().strip()
-    if not cached_arch: cached_arch = os.popen('uname -m').read().strip()
+        except: cached_os = run_text('uname -srm') or "Unknown OS"
+    if not cached_arch: cached_arch = run_text('uname -m') or platform.machine() or "unknown"
     if not cached_cpu_info:
         try:
             with open('/proc/cpuinfo') as f:
@@ -151,7 +159,7 @@ def get_static_sysinfo():
                         break
         except: cached_cpu_info = "Unknown CPU"
     if not cached_virt:
-        virt = os.popen('systemd-detect-virt 2>/dev/null').read().strip()
+        virt = run_text('systemd-detect-virt 2>/dev/null')
         if not virt or virt == 'none':
             try:
                 with open('/proc/1/environ', 'r', errors='ignore') as f: init_env = f.read()
@@ -203,9 +211,13 @@ def ensure_firewall_open(port):
             f"ip6tables -C INPUT -p {protocol} --dport {port} -j ACCEPT 2>/dev/null || ip6tables -I INPUT -p {protocol} --dport {port} -j ACCEPT",
             f"ip6tables -C OUTPUT -p {protocol} --sport {port} -j ACCEPT 2>/dev/null || ip6tables -I OUTPUT -p {protocol} --sport {port} -j ACCEPT"
         ]
-        for cmd in cmds: subprocess.run(cmd, shell=True, stderr=subprocess.DEVNULL)
-        if subprocess.run("command -v ufw", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
-            subprocess.run(f"ufw allow {port}/{protocol} >/dev/null 2>&1", shell=True)
+        for cmd in cmds:
+            try: subprocess.run(cmd, shell=True, stderr=subprocess.DEVNULL, timeout=5)
+            except Exception: pass
+        try:
+            has_ufw = subprocess.run("command -v ufw", shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3).returncode == 0
+            if has_ufw: subprocess.run(f"ufw allow {port}/{protocol} >/dev/null 2>&1", shell=True, timeout=5)
+        except Exception: pass
 
 def _read_iptables_port_bytes(port):
     """基于 ensure_firewall_open 插入的 dport(INPUT)/sport(OUTPUT) ACCEPT 规则，
@@ -237,15 +249,8 @@ def _read_iptables_port_bytes(port):
                 pass
     return total if found else None
 
-def get_port_traffic(port, protocol="tcp"):
-    ensure_firewall_open(port)
-
-    # 查找匹配端口对应的节点 inbound tag
-    node_tag = None
-    for node in current_active_nodes:
-        if str(node.get("port")) == str(port):
-            node_tag = f"in-{node['id']}"
-            break
+def get_port_traffic(port, protocol="tcp", node_id=None):
+    node_tag = f"in-{node_id}" if node_id else None
 
     # 优先：sing-box HTTP API 获取单入站精确流量（cumulative bytes）
     if node_tag:
@@ -312,7 +317,8 @@ def get_system_status(current_interval):
     except Exception: pass
 
     try:
-        df = subprocess.check_output("df -m /", shell=True).decode().split('\n')[1].split()
+        df_output = subprocess.run(["df", "-m", "/"], capture_output=True, text=True, timeout=3, check=True).stdout
+        df = df_output.split('\n')[1].split()
         stats["disk_total"] = df[1]
         stats["disk_used"] = df[2]
         stats["disk"] = int(df[4].replace('%', ''))
@@ -325,10 +331,11 @@ def get_system_status(current_interval):
             d, h, m = int(up_sec//86400), int((up_sec%86400)//3600), int((up_sec%3600)//60)
             stats["uptime"] = f"{d} days, {h:02d}:{m:02d}" if d > 0 else f"{h:02d}:{m:02d}"
         
-        stats["boot_time"] = os.popen("uptime -s 2>/dev/null || stat -c %y / 2>/dev/null | cut -d'.' -f1").read().strip()
-        stats["processes"] = str(len(os.popen("ps -e").readlines()) - 1)
-        stats["tcp_conn"] = os.popen("ss -ant 2>/dev/null | grep -v 'State' | wc -l").read().strip() or "0"
-        stats["udp_conn"] = os.popen("ss -anu 2>/dev/null | grep -v 'State' | wc -l").read().strip() or "0"
+        stats["boot_time"] = run_text("uptime -s 2>/dev/null || stat -c %y / 2>/dev/null | cut -d'.' -f1", timeout=3)
+        process_count = run_text("ps -e | wc -l", timeout=3)
+        stats["processes"] = str(max(0, int(process_count or '1') - 1))
+        stats["tcp_conn"] = run_text("ss -ant 2>/dev/null | grep -v 'State' | wc -l", timeout=3) or "0"
+        stats["udp_conn"] = run_text("ss -anu 2>/dev/null | grep -v 'State' | wc -l", timeout=3) or "0"
     except: pass
 
     rx_now, tx_now = get_net_dev_bytes()
@@ -693,20 +700,20 @@ def build_singbox_config(nodes, proxy_cfg=None, peers=None, mesh=None, socks5_ou
             print("[agent] sing-box binary not found; keeping last known-good config", flush=True)
             os.remove(temp_config)
             return
-        checked = subprocess.run([sing_box, "check", "-c", temp_config], capture_output=True, text=True)
+        checked = subprocess.run([sing_box, "check", "-c", temp_config], capture_output=True, text=True, timeout=30)
         if checked.returncode != 0:
             print(f"[agent] sing-box config rejected: {checked.stderr.strip()}", flush=True)
             os.remove(temp_config)
             return
         os.replace(temp_config, SINGBOX_CONF_PATH)
         if os.path.exists("/sbin/openrc-run") or os.path.exists("/etc/alpine-release"):
-            subprocess.run(["rc-service", "sing-box", "restart"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["rc-service", "sing-box", "restart"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
         else:
-            subprocess.run(["systemctl", "restart", "sing-box"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["systemctl", "restart", "sing-box"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
     elif os.path.exists("/sbin/openrc-run") or os.path.exists("/etc/alpine-release"):
-        subprocess.run(["rc-service", "sing-box", "start"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["rc-service", "sing-box", "start"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
     else:
-        subprocess.run(["systemctl", "start", "sing-box"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["systemctl", "start", "sing-box"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30)
 
 def report_status(current_nodes, argo_urls):
     global last_reported_bytes, global_interval, dynamic_ping, pending_report_id, pending_report_bytes, pending_node_traffic
@@ -721,7 +728,7 @@ def report_status(current_nodes, argo_urls):
         nid, port = node["id"], node["port"]
         current_ids.add(nid)
         proto = "udp" if node["protocol"] in ["Hysteria2", "TUIC"] else "tcp"
-        current_bytes = get_port_traffic(port, proto)
+        current_bytes = get_port_traffic(port, proto, nid)
         baseline = pending_bytes.get(nid, current_bytes)
         delta = current_bytes - baseline if current_bytes >= baseline else current_bytes
         if delta > 0: deltas.append({ "id": nid, "delta_bytes": delta })
@@ -736,8 +743,8 @@ def report_status(current_nodes, argo_urls):
 
     try: 
         req = urllib.request.Request(REPORT_URL, data=json.dumps(status).encode(), headers=HEADERS)
-        res = urllib.request.urlopen(req, timeout=5)
-        resp_data = json.loads(res.read().decode('utf-8'))
+        with urllib.request.urlopen(req, timeout=5) as response:
+            resp_data = json.loads(response.read().decode('utf-8'))
         last_reported_bytes = pending_report_bytes
         pending_report_id = None
         pending_report_bytes = None
@@ -747,14 +754,18 @@ def report_status(current_nodes, argo_urls):
         for key in ("ct", "cu", "cm"):
             value = resp_data.get(f"ping_{key}")
             dynamic_ping[key] = None if not value or value == "default" else value
-    except Exception as e: pass
+        return True
+    except Exception as error:
+        print(f"[agent] status report failed: {error}", flush=True)
+        return False
 
 def fetch_proxy_config():
     try:
         req = urllib.request.Request(f"{PROXY_API}/api/proxy/config?ip={VPS_IP}", headers=_proxy_ctrl_headers())
-        res = urllib.request.urlopen(req, timeout=10)
-        return json.loads(res.read().decode('utf-8'))
-    except Exception:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return json.loads(response.read().decode('utf-8'))
+    except Exception as error:
+        print(f"[agent] proxy config fetch failed: {error}", flush=True)
         return None
 
 def _extract_mesh(proxy_cfg):
@@ -780,7 +791,8 @@ def fetch_proxy_mesh(country="ANY"):
         proxy_path = "/api/proxy/proxies" if PROXY_API.rstrip('/') == BASE_URL.rstrip('/') else "/api/proxies"
         url = f"{PROXY_API}{proxy_path}?ip={VPS_IP}"
         req = urllib.request.Request(url, headers=_proxy_ctrl_headers())
-        raw = urllib.request.urlopen(req, timeout=10).read().decode('utf-8')
+        with urllib.request.urlopen(req, timeout=10) as response:
+            raw = response.read().decode('utf-8')
         peers = []
         for line in raw.splitlines():
             line = line.strip()
@@ -802,7 +814,8 @@ def fetch_proxy_mesh(country="ANY"):
             except Exception:
                 continue
         return peers
-    except Exception:
+    except Exception as error:
+        print(f"[agent] proxy mesh fetch failed: {error}", flush=True)
         return []
 
 def report_proxy_status():
@@ -830,14 +843,15 @@ def report_proxy_status():
             "last_seen": int(time.time())
         }
         req = urllib.request.Request(f"{PROXY_API}/api/proxy/report", data=json.dumps(payload).encode(), headers=_proxy_ctrl_headers())
-        urllib.request.urlopen(req, timeout=10)
-    except Exception:
-        pass
+        with urllib.request.urlopen(req, timeout=10) as response:
+            response.read(1)
+    except Exception as error:
+        print(f"[agent] proxy status report failed: {error}", flush=True)
 
 def fetch_and_apply_configs():
     try:
-        res = urllib.request.urlopen(urllib.request.Request(f"{API_URL}?ip={VPS_IP}", headers=HEADERS), timeout=10)
-        data = json.loads(res.read().decode('utf-8'))
+        with urllib.request.urlopen(urllib.request.Request(f"{API_URL}?ip={VPS_IP}", headers=HEADERS), timeout=10) as response:
+            data = json.loads(response.read().decode('utf-8'))
         if data.get("success"):
             persist_agent_token(data.get("agent_token"))
             nodes = data.get("configs", [])
@@ -854,21 +868,37 @@ def fetch_and_apply_configs():
             socks5_outbound = data.get("socks5_outbound", {})
             build_singbox_config(nodes, current_proxy_config, peers, mesh, socks5_outbound)
             return nodes
-    except Exception:
-        pass
+    except Exception as error:
+        print(f"[agent] config fetch/apply failed: {error}", flush=True)
     return None
 
 if __name__ == "__main__":
-    current_active_nodes = []
+    heartbeat_state = {"nodes": [], "argo_urls": []}
+
+    def heartbeat_loop():
+        while True:
+            started = time.monotonic()
+            try:
+                report_status(list(heartbeat_state["nodes"]), list(heartbeat_state["argo_urls"]))
+            except Exception as error:
+                print(f"[agent] heartbeat loop error: {error}", flush=True)
+            elapsed = time.monotonic() - started
+            heartbeat_interval = min(max(2, global_interval), 10)
+            time.sleep(max(1, heartbeat_interval - min(heartbeat_interval - 1, elapsed)))
+
     time.sleep(2)
+    threading.Thread(target=heartbeat_loop, name="kui-heartbeat", daemon=True).start()
     while True:
+        loop_started = time.monotonic()
         try:
             check_for_update()
             fetched_nodes = fetch_and_apply_configs()
-            if fetched_nodes is not None: current_active_nodes = fetched_nodes
-            argo_urls = process_argo_nodes(current_active_nodes)
-            report_status(current_active_nodes, argo_urls)
+            if fetched_nodes is not None: heartbeat_state["nodes"] = fetched_nodes
+            heartbeat_state["argo_urls"] = process_argo_nodes(heartbeat_state["nodes"])
             report_proxy_status()
         except Exception as error:
             print(f"[agent] main loop error: {error}", flush=True)
-        time.sleep(global_interval)
+        elapsed = time.monotonic() - loop_started
+        if elapsed > 20:
+            print(f"[agent] slow loop completed in {elapsed:.1f}s", flush=True)
+        time.sleep(max(1, global_interval - min(global_interval - 1, elapsed)))
