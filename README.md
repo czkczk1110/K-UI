@@ -166,7 +166,17 @@ DEV 修复情况
 
 虽然 Worker 代码对管理员账号保留了兼容默认值，但生产部署必须显式设置管理员账号和密码。`PROXY_USER`、`PROXY_PASS` 没有可用默认值；缺少任意一个时，住宅代理 API 返回 `503`，SOCKS5 监听器拒绝连接。
 
-`REALTIME_URL` 未配置时系统继续使用原有 HTTP 模式。配置后，Core Agent、住宅代理和管理员浏览器优先使用 WebSocket；在线状态每 30 秒通过 WebSocket 上报，关键连接和住宅通道变化立即推送。WebSocket 健康时仅每 15 分钟执行一次 HTTP 状态持久化与配置权威校验；连接中断满 30 秒后自动恢复状态 90 秒、配置 300 秒的 HTTP fallback，WebSocket 恢复后自动停止高频 HTTP 请求。
+`REALTIME_URL` 未配置时系统继续使用原有 HTTP 模式。配置后，Core Agent、住宅代理和管理员浏览器优先使用 WebSocket；在线状态每 5 秒通过 WebSocket 上报并合并推送，关键连接、住宅通道和配置结果变化立即推送，通常 1-5 秒显示。WebSocket 健康时仅每 15 分钟执行一次 HTTP 状态持久化与配置权威校验；连接中断满 30 秒后自动恢复状态 90 秒、配置 300 秒的 HTTP fallback，WebSocket 恢复后自动停止高频 HTTP 请求。
+
+实时组件由 Full Deploy 自动安装和更新，无需在 VPS 单独部署 WebSocket 服务：
+
+- `vps/realtime_client.py`：Core Agent 和 Proxy Manager 共用的 WebSocket 客户端。
+- `vps/agent.py`：每 5 秒发送 Core 状态，HTTP 仅负责低频持久化和 fallback。
+- `vps/lite_manager.py`：每 5 秒发送住宅通道状态，ACTIVE/STANDBY、出口和配置结果变化立即上报。
+- `realtime/src/index.js`：`VpsPresence` 每 5 秒最多向 `DashboardHub` 合并推送一次普通指标，关键变化不受合并周期限制。
+- `index.html`：Dashboard WebSocket 健康时停止周期 Pages API 轮询，断线满 30 秒才恢复 HTTP。
+
+以 2 台同时运行 Core 和住宅代理的 VPS、1 个常开后台为例，WebSocket 消息和 DO-to-DO 合并请求折算后约 3.8 万次 Durable Objects 计费请求/天，低于免费版 10 万次/天；健康态 Pages HTTP 主要为每 15 分钟一次的持久化和配置校验。
 
 ### 部署 Realtime Worker
 
@@ -445,15 +455,15 @@ LEGACY_AGENT_AUTH=false
 
 ## 💰 Cloudflare 免费额度优化
 
-- 无人查看后台时，统一 Agent 默认每 90 秒上报一次核心状态。
-- 打开后台后，UI 活跃信号会把核心状态临时加速到每 15 秒一次。
-- 统一 Agent 的节点与代理配置在后台活跃时每 30 秒检查，空闲时每 300 秒检查。
-- 住宅代理状态每 90 秒上报，住宅配置每 300 秒检查一次。
-- 后台主数据默认 15 秒刷新，探针默认 30 秒刷新，住宅页面默认 15 秒刷新。
-- 浏览器标签隐藏时会停止非必要轮询。
+- Durable Objects 模式下，Core 与住宅状态每 5 秒通过 WebSocket 上报，面板通常 1-5 秒更新。
+- WebSocket 健康时，状态持久化和配置权威校验每 15 分钟执行一次 HTTP。
+- Dashboard WebSocket 健康时停止主数据、探针、住宅状态和 UI 活跃信号的周期 Pages 请求。
+- WebSocket 连续断开满 30 秒后，Core/住宅状态恢复 90 秒 HTTP fallback，配置恢复 300 秒检查。
+- 纯 HTTP 模式保留主数据 15 秒、探针 30 秒、住宅页面 15 秒轮询。
+- 浏览器标签隐藏时会停止非必要轮询并关闭 Dashboard WebSocket。
 - D1 schema 在每个 Worker 实例中只初始化一次，历史上报回执每小时最多清理一次。
 
-按 3 台 VPS、后台每天打开约 1 小时估算，Pages Functions 通常约每日 1 万次；10 台 VPS 空闲运行通常约每日 3 万次，为浏览器访问和突发操作保留较大余量。D1 写入量受节点流量影响，属于次要优化目标。不要将后台刷新或探针上报长期设置为 1-5 秒，否则会显著增加 Pages Functions 消耗。
+按 2 台同时运行 Core 与住宅代理的 VPS、1 个常开后台估算，健康态 Pages HTTP 主要由 15 分钟检查点产生；Durable Objects 计费请求约 3.8 万次/天。不要把 Pages HTTP 轮询设置为 1-5 秒，实时显示应由 WebSocket 完成。
 
 ### Durable Objects 实时模式
 
@@ -461,8 +471,8 @@ LEGACY_AGENT_AUTH=false
 
 - Core Agent 与住宅管理器分别保持 Hibernation WebSocket。
 - 浏览器后台只保持一条 Dashboard WebSocket，状态变化由服务端主动推送。
-- 普通指标约 15 秒进入 Presence，最多每 60 秒转发一次到 Dashboard；上下线、主备切换和出口变化立即推送。
-- WebSocket 在线时，HTTP 仅每 5 分钟执行一次 D1 权威检查点。
+- 普通指标每 5 秒进入 Presence，最多每 5 秒向 Dashboard 合并推送一次；上下线、主备切换、出口和配置结果变化立即推送。
+- WebSocket 在线时，HTTP 仅每 15 分钟执行一次 D1 状态持久化和配置权威检查点。
 - WebSocket 断开后先重连；持续 30 秒仍未恢复时，自动切入现有 HTTP 心跳和配置轮询。
 - WebSocket 恢复后自动停止高频 HTTP 备份，不需要人工切换。
 - 未配置 `realtime_url` 或 Python WebSocket 包不可用时，系统保持纯 HTTP 模式。

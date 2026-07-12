@@ -287,7 +287,7 @@ def c2_heartbeat_loop():
         except Exception as error:
             print(f"[c2] 状态上报失败: {error}", flush=True)
         if realtime_channel and realtime_channel.connected:
-            interval = 30
+            interval = 5
         elif realtime_channel and realtime_channel.enabled and not realtime_channel.ever_connected and time.time() - realtime_channel.started_at < 30:
             interval = max(1, 30 - (time.time() - realtime_channel.started_at))
         elif realtime_channel and realtime_channel.ever_connected and time.time() - realtime_channel.last_disconnected < 30:

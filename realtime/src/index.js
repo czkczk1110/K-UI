@@ -225,7 +225,7 @@ export class VpsPresence extends DurableObject {
       this.lastPersisted = Date.now();
       await this.ctx.storage.put({ snapshot: this.snapshot, lastSeq: this.lastSeq, bootId: this.bootId });
     }
-    if (criticalChange || Date.now() - this.lastForwarded >= 60000) await this.broadcast();
+    if (criticalChange || Date.now() - this.lastForwarded >= 5000) await this.broadcast();
   }
 
   async webSocketClose(ws) {
@@ -251,8 +251,8 @@ export class VpsPresence extends DurableObject {
     const proxyAge = this.snapshot.proxy_last_seen ? now - this.snapshot.proxy_last_seen : null;
     return {
       ...this.snapshot,
-      core_state: !this.snapshot.core_connected ? "offline" : coreAge > 120000 ? "stale" : "online",
-      proxy_state: !this.snapshot.proxy_connected ? "offline" : proxyAge > 180000 ? "stale" : "online",
+      core_state: !this.snapshot.core_connected ? "offline" : coreAge > 20000 ? "stale" : "online",
+      proxy_state: !this.snapshot.proxy_connected ? "offline" : proxyAge > 20000 ? "stale" : "online",
       core_age: coreAge,
       proxy_age: proxyAge,
       boot_id: this.bootId,

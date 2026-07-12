@@ -958,7 +958,7 @@ if __name__ == "__main__":
                 print(f"[agent] heartbeat loop error: {error}", flush=True)
             elapsed = time.monotonic() - started
             if realtime_channel and realtime_channel.connected:
-                heartbeat_interval = 30
+                heartbeat_interval = 5
             elif realtime_channel and realtime_channel.enabled and not realtime_channel.ever_connected and time.time() - realtime_channel.started_at < 30:
                 heartbeat_interval = max(1, 30 - (time.time() - realtime_channel.started_at))
             elif realtime_channel and realtime_channel.ever_connected and time.time() - realtime_channel.last_disconnected < 30:
