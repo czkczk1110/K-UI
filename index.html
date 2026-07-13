@@ -454,12 +454,13 @@
 
                             <div class="bg-sky-50/70 p-4 rounded-[1.5rem] border border-sky-100 mt-4">
                                 <div class="mb-3"><div class="text-xs font-black text-sky-700 tracking-wider">节点出口</div><div class="text-[10px] text-sky-500/80 mt-0.5">手动下拉选择；系统保证 SOCKS5 与 WARP 不会同时启用</div></div>
-                                <select :value="egressModeOf(vps)" @change="updateVpsEgress(vps, $event.target.value, null, null)" :disabled="vps.egress_status === 'pending'" class="w-full bg-white border border-sky-200 p-3 rounded-xl text-sm font-black text-slate-700 outline-none disabled:opacity-50">
+                                <select :value="egressModeOf(vps)" @change="onEgressModeChange(vps, $event.target.value)" :disabled="vps.egress_status === 'pending'" class="w-full bg-white border border-sky-200 p-3 rounded-xl text-sm font-black text-slate-700 outline-none disabled:opacity-50">
                                     <option value="native">原生出口</option>
                                     <option value="warp_ipv4">WARP IPv4</option>
                                     <option value="warp_ipv6">WARP IPv6</option>
                                     <option value="warp_dual">WARP 双栈</option>
                                     <option value="residential">住宅 IP 代理</option>
+                                    <option value="socks5">手动 SOCKS5</option>
                                 </select>
                                 <div v-if="egressModeOf(vps) === 'residential'" class="mt-3">
                                     <div class="flex gap-2 mb-2">
@@ -471,7 +472,27 @@
                                     </div>
                                     <div class="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-black text-amber-700">⚠ 住宅 IP 出口与 WARP 出口不能同时启用；全局代理：所有节点流量经住宅出口；局部代理：仅选中服务走住宅出口。</div>
                                 </div>
-                                <div v-if="egressModeOf(vps) !== 'residential'" class="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-black text-amber-700">⚠ 住宅 IP 出口与 WARP 出口不能同时启用；住宅出口自动使用本机 ACTIVE 隧道，无需填写地址或密码。</div>
+                                <div v-if="egressModeOf(vps) === 'socks5'" class="mt-3 space-y-2">
+                                    <div class="grid grid-cols-3 gap-2">
+                                        <input v-model="vps._socks5_addr" placeholder="地址" class="col-span-2 bg-white border border-sky-200 p-2 rounded-xl text-sm font-medium text-slate-700 outline-none">
+                                        <input v-model.number="vps._socks5_port" placeholder="端口" type="number" class="bg-white border border-sky-200 p-2 rounded-xl text-sm font-medium text-slate-700 outline-none">
+                                    </div>
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <input v-model="vps._socks5_user" placeholder="用户名（可选）" class="bg-white border border-sky-200 p-2 rounded-xl text-sm font-medium text-slate-700 outline-none">
+                                        <input v-model="vps._socks5_pass" placeholder="密码（可选）" type="password" class="bg-white border border-sky-200 p-2 rounded-xl text-sm font-medium text-slate-700 outline-none">
+                                    </div>
+                                    <div class="flex gap-2 mb-1">
+                                        <button @click="updateVpsEgress(vps, 'socks5', 'global', '')" :class="proxyModeOf(vps) === 'global' ? 'bg-sky-600 text-white shadow-md' : 'bg-white text-slate-600 border border-sky-200'" class="flex-1 py-2 rounded-xl text-xs font-black transition-all">全局代理</button>
+                                        <button @click="updateVpsEgress(vps, 'socks5', 'selective', proxyCategoriesOf(vps))" :class="proxyModeOf(vps) === 'selective' ? 'bg-sky-600 text-white shadow-md' : 'bg-white text-slate-600 border border-sky-200'" class="flex-1 py-2 rounded-xl text-xs font-black transition-all">局部代理</button>
+                                    </div>
+                                    <div v-if="proxyModeOf(vps) === 'selective'" class="flex flex-wrap gap-1.5 mb-1">
+                                        <button v-for="cat in proxyCategoryOptions" :key="cat.key" @click="toggleProxyCategory(vps, cat.key)" :class="proxyCategoryActive(vps, cat.key) ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white text-slate-500 border border-slate-200'" class="px-3 py-1.5 rounded-lg text-[11px] font-bold transition-all">{{ cat.label }}</button>
+                                    </div>
+                                    <div class="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-black text-amber-700">⚠ 填写 SOCKS5 代理地址后点击全局/局部代理按钮应用。</div>
+                                </div>
+                                <div v-if="egressModeOf(vps) === 'native'" class="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-black text-amber-700">VPS 本机原生网络出口，不经过任何代理或隧道。</div>
+                                <div v-if="egressModeOf(vps) === 'residential'" class="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-black text-amber-700">⚠ 住宅 IP 出口与 WARP 出口不能同时启用；住宅出口自动使用本机 ACTIVE 隧道，无需填写地址或密码。</div>
+                                <div v-if="egressModeOf(vps).startsWith('warp_')" class="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-black text-amber-700">⚠ WARP Warp 出口基于 WireGuard 隧道，不会与住宅/SOCKS5 出口冲突。</div>
                                 <div class="mt-3 text-[10px] font-bold" :class="vps.egress_status === 'pending' ? 'text-amber-500' : (vps.egress_status === 'failed' ? 'text-rose-500' : 'text-slate-500')">
                                     <span v-if="vps.egress_status === 'pending'">● 期望 {{ egressModeLabel(vps.egress_mode) }}，正在实时下发...</span>
                                     <span v-else-if="vps.egress_status === 'applied'">● 实际已应用 {{ egressModeLabel(vps.egress_applied_mode) }}<span v-if="vps.egress_ip" class="ml-1 font-mono text-indigo-500">({{ vps.egress_ip }})</span></span>
@@ -1279,6 +1300,7 @@
                         servers.value.forEach(s => { 
                             if(!newNodeParams[s.ip]) newNodeParams[s.ip] = { protocol: 'XTLS-Reality', port: 443, username: 'admin', sni: '', relay_type: 'external', target_ip: '', target_port: '', target_id: '', traffic_limit_gb: '', expire_date: '' };
                             if(!deployOsMap[s.ip]) deployOsMap[s.ip] = 'debian'; if(!batchStartPort[s.ip]) batchStartPort[s.ip] = ''; if(!batchUser[s.ip]) batchUser[s.ip] = 'admin';
+                            if (s.egress_mode === 'socks5' || s.socks5_addr) { s._socks5_addr = s.socks5_addr || ''; s._socks5_port = s.socks5_port || 1080; s._socks5_user = s.socks5_user || ''; s._socks5_pass = s.socks5_pass || ''; }
                         });
                     if (activeTab.value === 'nodes') renderKUICharts();
                     
@@ -1311,14 +1333,23 @@
                 const resetUserTraffic = async (username) => { await fetchApi('/api/users', { method: 'PUT', body: JSON.stringify({ username, reset_traffic: true }) }); refreshData(); };
                 const addVps = async () => { if(!newVps.value.ip || !newVps.value.name) return alert('请输入名称和IP'); deployOsMap[newVps.value.ip] = newVps.value.os; saveOsMap(); await fetchApi('/api/vps', { method: 'POST', body: JSON.stringify({ ip: newVps.value.ip, name: newVps.value.name }) }); newVps.value = { name: '', ip: '', os: 'debian' }; refreshData(); fetchProbeData();};
                 const deleteVps = async (ip) => { if(confirm('🧨 确定移除该机器？该机器相关的探针数据、节点数据将被完全清空！')) { await fetchApi(`/api/vps?ip=${ip}`, { method: 'DELETE' }); refreshData(); fetchProbeData();} };
-                const egressModeLabel = mode => ({ native: '原生出口', residential: '住宅 IP 代理', warp_ipv4: 'WARP IPv4', warp_ipv6: 'WARP IPv6', warp_dual: 'WARP 双栈' }[mode] || mode);
+                const egressModeLabel = mode => ({ native: '原生出口', residential: '住宅 IP 代理', warp_ipv4: 'WARP IPv4', warp_ipv6: 'WARP IPv6', warp_dual: 'WARP 双栈', socks5: '手动 SOCKS5' }[mode] || mode);
                 const egressModeOf = vps => vps.egress_mode || 'native';
                 const proxyModeOf = vps => vps.proxy_mode || 'global';
+                const onEgressModeChange = (vps, mode) => {
+                    if (mode === 'socks5') {
+                        vps._socks5_addr = vps._socks5_addr || vps.socks5_addr || '';
+                        vps._socks5_port = vps._socks5_port || vps.socks5_port || 1080;
+                        vps._socks5_user = vps._socks5_user || vps.socks5_user || '';
+                        vps._socks5_pass = vps._socks5_pass || vps.socks5_pass || '';
+                    }
+                    updateVpsEgress(vps, mode, null, null);
+                };
                 const proxyCategoriesOf = vps => vps.proxy_categories || '';
                 const proxyCategoryOptions = [ { key: 'youtube', label: 'YouTube' }, { key: 'ai', label: 'AI' }, { key: 'google', label: 'Google 搜索' }, { key: 'streaming', label: '流媒体' } ];
                 const proxyCategoryActive = (vps, cat) => { const cats = (vps.proxy_categories || '').split(',').filter(Boolean); return cats.includes(cat); };
                 const toggleProxyCategory = async (vps, cat) => {
-                    if (egressModeOf(vps) !== 'residential') return;
+                    if (!['residential','socks5'].includes(egressModeOf(vps))) return;
                     const current = (vps.proxy_categories || '').split(',').filter(Boolean);
                     const idx = current.indexOf(cat);
                     if (idx >= 0) current.splice(idx, 1); else current.push(cat);
@@ -1326,7 +1357,7 @@
                     vps.proxy_categories = joined;
                     if (joined) vps.proxy_mode = 'selective';
                     if (vps.egress_status !== 'pending') {
-                        await updateVpsEgress(vps, 'residential', joined ? 'selective' : 'global', joined);
+                        await updateVpsEgress(vps, egressModeOf(vps), joined ? 'selective' : 'global', joined);
                     } else {
                         vps._proxy_categories_dirty = true;
                     }
@@ -1341,11 +1372,18 @@
                     try {
                         const body = { ip: vps.ip, egress_mode: vps.egress_mode };
                         if (vps.egress_mode === 'residential') { body.proxy_mode = vps.proxy_mode || 'global'; body.proxy_categories = vps.proxy_categories || ''; }
+                        if (vps.egress_mode === 'socks5') {
+                            body.proxy_mode = vps.proxy_mode || 'global'; body.proxy_categories = vps.proxy_categories || '';
+                            body.socks5_addr = vps._socks5_addr || ''; body.socks5_port = vps._socks5_port || 1080;
+                            body.socks5_user = vps._socks5_user || ''; body.socks5_pass = vps._socks5_pass || '';
+                        }
                         const res = await fetchApi('/api/vps', { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
                         const saved = await res.json();
                         vps.egress_mode = saved.egress_mode || mode; vps.egress_revision = saved.egress_revision; vps.egress_status = saved.egress_status || 'pending';
-                        vps.proxy_mode = saved.proxy_mode || (vps.egress_mode === 'residential' ? 'global' : '');
+                        vps.proxy_mode = saved.proxy_mode || (vps.egress_mode === 'residential' || vps.egress_mode === 'socks5' ? 'global' : '');
                         vps.proxy_categories = saved.proxy_categories || '';
+                        vps.socks5_addr = saved.socks5_addr || ''; vps.socks5_port = saved.socks5_port || 0;
+                        vps.socks5_user = saved.socks5_user || ''; vps.socks5_pass = saved.socks5_pass || '';
                     } catch (error) { vps.egress_mode = prevMode; vps.proxy_mode = prevProxyMode; vps.proxy_categories = prevCats; vps.egress_status = 'failed'; alert(error.message || `出口切换失败，仍保持 ${egressModeLabel(prevMode)}`); }
                 };
 
@@ -1518,7 +1556,7 @@
                     if (!snapshot?.ip) return;
                     const key = normalizeRealtimeKey(snapshot.ip);
                     const resultServer = servers.value.find(item => normalizeRealtimeKey(item.ip) === key);
-                    if (resultServer && snapshot.core_config_result?.component === 'egress' && Number(snapshot.core_config_result.revision) === Number(resultServer.egress_revision)) { resultServer.egress_status = snapshot.core_config_result.success ? 'applied' : 'failed'; resultServer.egress_applied_mode = snapshot.core_config_result.applied_mode; resultServer.egress_error = snapshot.core_config_result.error || ''; if (snapshot.core_config_result.success) resultServer.egress_applied_revision = snapshot.core_config_result.revision; if (snapshot.core_config_result.egress_ip) resultServer.egress_ip = snapshot.core_config_result.egress_ip; if (resultServer.egress_status === 'applied' && egressModeOf(resultServer) === 'residential' && resultServer._proxy_categories_dirty) { resultServer._proxy_categories_dirty = false; updateVpsEgress(resultServer, 'residential', proxyModeOf(resultServer), proxyCategoriesOf(resultServer)); } }
+                    if (resultServer && snapshot.core_config_result?.component === 'egress' && Number(snapshot.core_config_result.revision) === Number(resultServer.egress_revision)) { resultServer.egress_status = snapshot.core_config_result.success ? 'applied' : 'failed'; resultServer.egress_applied_mode = snapshot.core_config_result.applied_mode; resultServer.egress_error = snapshot.core_config_result.error || ''; if (snapshot.core_config_result.success) resultServer.egress_applied_revision = snapshot.core_config_result.revision; if (snapshot.core_config_result.egress_ip) resultServer.egress_ip = snapshot.core_config_result.egress_ip; if (resultServer.egress_status === 'applied' && ['residential','socks5'].includes(egressModeOf(resultServer)) && resultServer._proxy_categories_dirty) { resultServer._proxy_categories_dirty = false; updateVpsEgress(resultServer, egressModeOf(resultServer), proxyModeOf(resultServer), proxyCategoriesOf(resultServer)); } }
                     if (snapshot.core) {
                         const timestamp = Number(snapshot.core_last_seen || snapshot.updated_at || 0);
                         const server = servers.value.find(item => normalizeRealtimeKey(item.ip) === key);
@@ -1618,7 +1656,7 @@
                     qrModalOpen, qrCodeImage, showQrCode, 
                     showWelcomePopup, closePopup,
                     availableThemes, pingNodes, pullGithubNodes, hasCustomCssFlag,
-                    proxyConfig, toggleNodeProxy, saveProxyConfig, switchProxyIP, proxyPool, loadProxyPool, egressModeLabel, updateVpsEgress, egressModeOf, proxyModeOf, proxyCategoriesOf, proxyCategoryOptions, proxyCategoryActive, toggleProxyCategory,
+                    proxyConfig, toggleNodeProxy, saveProxyConfig, switchProxyIP, proxyPool, loadProxyPool, egressModeLabel, updateVpsEgress, egressModeOf, proxyModeOf, proxyCategoriesOf, proxyCategoryOptions, proxyCategoryActive, toggleProxyCategory, onEgressModeChange,
                     pollingSettings, applyPollingSettings
                 };
             }

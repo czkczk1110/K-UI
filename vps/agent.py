@@ -1249,7 +1249,12 @@ def fetch_and_apply_configs():
             proxy_categories = egress.get("proxy_categories", "")
             proxy_categories_list = [c.strip() for c in proxy_categories.split(",") if c.strip()] if proxy_categories else []
             proxy_domains = json.dumps({"categories": proxy_categories_list}) if proxy_mode == "selective" and proxy_categories_list else ""
-            runtime_socks = {"enabled": True, "source": "residential", "addr": residential.get("addr", "127.0.0.1"), "port": residential.get("port", 7920), "user": residential.get("user", ""), "pass": residential.get("pass", ""), "mode": proxy_mode, "domains": proxy_domains} if runtime_egress == "residential" else {}
+            if runtime_egress == "residential":
+                runtime_socks = {"enabled": True, "source": "residential", "addr": residential.get("addr", "127.0.0.1"), "port": residential.get("port", 7920), "user": residential.get("user", ""), "pass": residential.get("pass", ""), "mode": proxy_mode, "domains": proxy_domains}
+            elif runtime_egress == "socks5":
+                runtime_socks = {"enabled": True, "source": "manual", "addr": egress.get("socks5_addr", ""), "port": int(egress.get("socks5_port", 0)), "user": egress.get("socks5_user", ""), "pass": egress.get("socks5_pass", ""), "mode": proxy_mode, "domains": proxy_domains}
+            else:
+                runtime_socks = {}
             runtime_warp = runtime_egress[5:] if runtime_egress.startswith("warp_") else "off"
             config_hash = hashlib.sha256(json.dumps({"nodes": nodes, "egress": runtime_egress}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             try:
@@ -1274,7 +1279,12 @@ def fetch_and_apply_configs():
                         rb_proxy_categories = egress.get("proxy_categories", "")
                         rb_proxy_cats_list = [c.strip() for c in rb_proxy_categories.split(",") if c.strip()] if rb_proxy_categories else []
                         rb_proxy_domains = json.dumps({"categories": rb_proxy_cats_list}) if rb_proxy_mode == "selective" and rb_proxy_cats_list else ""
-                        rollback_socks = {"enabled": True, "source": "residential", "addr": residential.get("addr", "127.0.0.1"), "port": residential.get("port", 7920), "user": residential.get("user", ""), "pass": residential.get("pass", ""), "mode": rb_proxy_mode, "domains": rb_proxy_domains} if applied_egress == "residential" else {}
+                        if applied_egress == "residential":
+                            rollback_socks = {"enabled": True, "source": "residential", "addr": residential.get("addr", "127.0.0.1"), "port": residential.get("port", 7920), "user": residential.get("user", ""), "pass": residential.get("pass", ""), "mode": rb_proxy_mode, "domains": rb_proxy_domains}
+                        elif applied_egress == "socks5":
+                            rollback_socks = {"enabled": True, "source": "manual", "addr": egress.get("socks5_addr", ""), "port": int(egress.get("socks5_port", 0)), "user": egress.get("socks5_user", ""), "pass": egress.get("socks5_pass", ""), "mode": rb_proxy_mode, "domains": rb_proxy_domains}
+                        else:
+                            rollback_socks = {}
                         rollback_warp = applied_egress[5:] if applied_egress.startswith("warp_") else "off"
                         build_singbox_config(nodes, current_proxy_config, peers, mesh, rollback_socks, rollback_warp)
                         rollback_healthy = _singbox_service_healthy()
