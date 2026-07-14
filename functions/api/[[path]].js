@@ -1250,6 +1250,10 @@ export async function onRequest(context) {
     // 🌟 核心拦截并拆分普通订阅与 Clash 订阅生成
     if (action === "sub" && method === "GET") {
         await ensureDbSchema(db);
+        const subscriptionProtection = await db.prepare("SELECT value FROM probe_settings WHERE key = 'subscription_protection'").first();
+        if (subscriptionProtection?.value === 'true') {
+            return new Response("链接无效", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
+        }
         const urlObj = new URL(request.url); 
         const ip = urlObj.searchParams.get("ip"); 
         const reqUser = urlObj.searchParams.get("user"); 

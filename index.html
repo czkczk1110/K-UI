@@ -831,6 +831,11 @@
                                 <label class="flex items-center gap-2 text-sm cursor-pointer"><input type="checkbox" v-model="probeSys.enable_popup" true-value="true" false-value="false" class="w-4 h-4"> 开启首页访问公告弹窗 (支持HTML)</label>
                                 <div v-if="probeSys.enable_popup === 'true'"><textarea v-model="probeSys.popup_content" rows="4" class="w-full bg-white/50 border p-2.5 rounded-xl text-sm" placeholder="<h3>公告</h3><p>内容...</p>"></textarea></div>
 
+                                <div class="rounded-xl border border-rose-200 bg-rose-50 p-3">
+                                    <label class="flex items-center gap-2 text-sm font-bold text-rose-700 cursor-pointer"><input type="checkbox" v-model="probeSys.subscription_protection" true-value="true" false-value="false" class="w-4 h-4"> 开启订阅保护</label>
+                                    <p class="mt-1 text-[10px] font-medium text-rose-600">开启后，所有在线订阅更新请求都会返回“链接无效”，可阻止爬虫拉取；关闭后恢复正常订阅更新。修改后点击下方“立即生效配置”保存。</p>
+                                </div>
+
                                 <label class="block text-sm font-bold text-blue-600 mt-6 mb-2">📡 动态下发三网测速节点配置</label>
                                 <div><label class="block text-xs font-bold text-slate-500 mb-1">电信 (CT)</label>
                                     <select v-model="probeSys.ping_node_ct" class="w-full bg-white/50 border p-2.5 rounded-xl text-sm">
