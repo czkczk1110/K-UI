@@ -241,7 +241,9 @@ export class VpsPresence extends DurableObject {
       return;
     }
     if (messageType === "config.result") {
-      this.snapshot[`${role}_config_result`] = { success: envelope.data?.success === true, component: String(envelope.data?.component || "").slice(0, 32), error: String(envelope.data?.error || "").slice(0, 500), applied_at: Number(envelope.data?.applied_at) || Date.now() };
+      const result = { success: envelope.data?.success === true, component: String(envelope.data?.component || "").slice(0, 32), revision: Number(envelope.data?.revision) || 0, desired_mode: String(envelope.data?.desired_mode || "").slice(0, 32), applied_mode: String(envelope.data?.applied_mode || "").slice(0, 32), egress_ip: String(envelope.data?.egress_ip || "").slice(0, 64), error: String(envelope.data?.error || "").slice(0, 500), applied_at: Number(envelope.data?.applied_at) || Date.now() };
+      this.snapshot[`${role}_config_result`] = result;
+      if (result.component === "egress") this.snapshot[`${role}_egress_result`] = result;
       this.snapshot[`${role}_config_result_at`] = Date.now();
       ws.serializeAttachment(attachment);
       await this.persistAndBroadcast();
