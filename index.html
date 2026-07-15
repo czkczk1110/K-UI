@@ -32,7 +32,8 @@
         /* ================= 探针前台大盘核心样式 ================= */
         .probe-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: transparent; color: #333; margin: 0; padding: 12px; transition: all 0.3s; min-height: 100vh;}
         @media (min-width: 640px) { .probe-body { padding: 20px; } }
-        body:not(.theme6) .probe-body { background-color: #f4f5f7; }
+        /* Keep the default surface, but let dynamically loaded themes paint the page background. */
+        body.theme1 .probe-body { background-color: #f4f5f7; }
         
         .probe-container { max-width: 1200px; margin: 0 auto; padding: 0 4px; }
         @media (min-width: 640px) { .probe-container { padding: 0; } }
@@ -81,8 +82,8 @@
         .probe-filter-tag.active { background: #3b82f6; color: white; }
 
         /* Map */
-         #probe-map-container { width: 100%; height: 500px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); overflow: hidden; border: 1px solid #e5e7eb; background-color: #b1c2d4; background-image: linear-gradient(rgba(255,255,255,0.2) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.2) 1px, transparent 1px); background-size: 20px 20px; z-index: 1;}
-         @media (max-width: 640px) { #probe-map-container { height: 300px; } }
+         #map-container { width: 100%; height: 500px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); overflow: hidden; border: 1px solid #e5e7eb; background-color: #b1c2d4; background-image: linear-gradient(rgba(255,255,255,0.2) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.2) 1px, transparent 1px); background-size: 20px 20px; z-index: 1;}
+         @media (max-width: 640px) { #map-container { height: 300px; } }
         .probe-custom-map-badge div { background-color: #10b981; color: white; border-radius: 50%; width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; border: 2px solid white; box-shadow: 0 2px 6px rgba(0,0,0,0.4); }
 
         /* Detail View */
@@ -109,7 +110,7 @@
         .theme2 .probe-custom-table th { background: #0d1117; color: #8b949e; border-bottom-color: #30363d; }
         .theme2 .probe-custom-table td { border-bottom-color: #30363d; } .theme2 .probe-custom-table tr:hover { background: #21262d; }
         .theme2 .probe-stat-subtext { color: rgba(255,255,255,0.6); }
-        .theme2 #probe-map-container { background-color: #0d1117; border-color: #30363d; background-image: linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px); }
+        .theme2 #map-container { background-color: #0d1117; border-color: #30363d; background-image: linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px); }
 
         .theme3 { background-color: #fef08a; color: #000; font-weight: 500; }
         .theme3 .probe-vps-card, .theme3 .probe-global-stats, .theme3 .probe-header-card, .theme3 .probe-chart-card { background: #fff; border: 3px solid #000; border-radius: 0; box-shadow: 6px 6px 0px #000; transition: transform 0.1s, box-shadow 0.1s; }
@@ -144,7 +145,11 @@
         .theme5 .probe-custom-table, .theme5 .probe-filter-tag { background: #0b0c10; border: 1px solid #f0f; border-radius: 0; box-shadow: 0 0 10px rgba(255, 0, 255, 0.2); color: #fff; }
         .theme5 .probe-custom-table th { background: #111; color: #f0f; border-color: #333; } .theme5 .probe-custom-table td { border-color: #333; } .theme5 .probe-custom-table tr:hover { background: #222; }
         .theme5 .probe-stat-subtext { color: rgba(255,255,255,0.6); }
-        .theme5 #probe-map-container { background-color: #0d1117; border-color: #30363d; background-image: linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px); }
+        .theme5 #map-container { background-color: #0d1117; border-color: #30363d; background-image: linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px); }
+
+        /* Cloud themes before the KUI integration use these legacy card wrappers. */
+        .stats-row { display: contents; }
+        .theme12 .card-left, .theme12 .card-right { display: contents !important; }
 
         /* ================= Proxy Controller 双活引擎总控 ================= */
         .pc-body { font-family: 'Inter', sans-serif; }
@@ -252,9 +257,11 @@
                     </div>
 
                     <div class="probe-global-stats global-stats">
-                        <div class="probe-g-item g-item w-full sm:w-auto"><div class="probe-g-label g-label">服务器总数</div><div class="probe-g-val g-val">{{ publicProbeServers.length }}</div><div class="probe-g-sub g-sub">在线 <span class="text-emerald-500">{{ probeGlobalOnline }}</span> | 离线 <span class="text-red-500">{{ probeGlobalOffline }}</span></div></div>
-                        <div class="probe-g-item g-item w-full sm:w-auto"><div class="probe-g-label g-label">总计流量 (入 | 出) <span v-if="probeSys.auto_reset_traffic==='true'" class="text-[10px] text-orange-600">(按期重置)</span></div><div class="probe-g-val g-val">{{ formatBytes(probeGlobalNetRx) }} | {{ formatBytes(probeGlobalNetTx) }}</div></div>
-                        <div class="probe-g-item g-item w-full sm:w-auto"><div class="probe-g-label g-label">实时网速 (入 | 出)</div><div class="probe-g-val g-val"><span class="text-emerald-500">↓</span> {{ formatBytes(probeGlobalSpeedIn) }}/s | <span class="text-blue-500">↑</span> {{ formatBytes(probeGlobalSpeedOut) }}/s</div></div>
+                        <div class="stats-row">
+                            <div class="probe-g-item g-item w-full sm:w-auto"><div class="probe-g-label g-label">服务器总数</div><div class="probe-g-val g-val">{{ publicProbeServers.length }}</div><div class="probe-g-sub g-sub">在线 <span class="text-emerald-500">{{ probeGlobalOnline }}</span> | 离线 <span class="text-red-500">{{ probeGlobalOffline }}</span></div></div>
+                            <div class="probe-g-item g-item w-full sm:w-auto"><div class="probe-g-label g-label">总计流量 (入 | 出) <span v-if="probeSys.auto_reset_traffic==='true'" class="text-[10px] text-orange-600">(按期重置)</span></div><div class="probe-g-val g-val">{{ formatBytes(probeGlobalNetRx) }} | {{ formatBytes(probeGlobalNetTx) }}</div></div>
+                            <div class="probe-g-item g-item w-full sm:w-auto"><div class="probe-g-label g-label">实时网速 (入 | 出)</div><div class="probe-g-val g-val"><span class="text-emerald-500">↓</span> {{ formatBytes(probeGlobalSpeedIn) }}/s | <span class="text-blue-500">↑</span> {{ formatBytes(probeGlobalSpeedOut) }}/s</div></div>
+                        </div>
                     </div>
 
                     <div v-if="probeView === 'card'">
@@ -263,51 +270,53 @@
                             <div class="probe-group-header group-header">{{ groupName }}</div>
                             <div class="probe-grid-container grid-container">
                                 <div v-for="s in servers" :key="s.id" @click="openProbeDetail(s.id)" class="probe-vps-card vps-card">
-                                    <div class="probe-card-left card-left">
-                                        <div class="probe-card-title card-title">
-                                            <div class="probe-status-dot status-dot" :style="{background: isOnline(s.last_updated, s.realtime_state) ? '#10b981' : '#ef4444'}"></div>
+                                    <div class="probe-card-left card-left item-left-bag">
+                                        <div class="probe-card-title card-title item-title">
+                                            <div class="probe-status-dot status-dot item-status" :style="{background: isOnline(s.last_updated, s.realtime_state) ? '#10b981' : '#ef4444'}"></div>
                                             <img v-if="s.country && s.country !== 'XX'" :src="'https://flagcdn.com/24x18/' + (s.country === 'TW' ? 'cn' : s.country.toLowerCase()) + '.png'" class="mr-1.5 rounded-sm">
                                             <span class="text-[15px] truncate card-title-text">{{ s.name }}</span>
                                         </div>
-                                        <div v-if="probeSys.show_price === 'true'" class="probe-card-meta card-meta mt-2">价格: {{ s.price || '免费' }}</div>
-                                        <div v-if="probeSys.show_expire === 'true'" class="probe-card-meta card-meta" :class="probeSys.show_price!=='true'?'mt-2':''">剩余天数: {{ getExpireText(s.expire_date) }}</div>
-                                        <div class="probe-card-meta card-meta" :class="probeSys.show_price!=='true'&&probeSys.show_expire!=='true'?'mt-2':''">流量: <span class="text-emerald-500">↓</span> {{ formatBytes(s[probeSys.auto_reset_traffic === 'true' ? 'monthly_rx' : 'net_rx']) }} | <span class="text-blue-500">↑</span> {{ formatBytes(s[probeSys.auto_reset_traffic === 'true' ? 'monthly_tx' : 'net_tx']) }}</div>
-                                        <div class="probe-card-meta card-meta mt-0.5">在线: {{ (s.uptime||'-').replace('days','天').replace('day','天') }} | 更新: {{ Math.round((Date.now() - s.last_updated)/1000) }}s前</div>
+                                        <div v-if="probeSys.show_price === 'true'" class="probe-card-meta card-meta item-meta mt-2">价格: {{ s.price || '免费' }}</div>
+                                        <div v-if="probeSys.show_expire === 'true'" class="probe-card-meta card-meta item-meta item-meta-expire" :class="probeSys.show_price!=='true'?'mt-2':''">剩余天数: {{ getExpireText(s.expire_date) }}</div>
+                                        <div class="probe-card-meta card-meta item-meta item-meta-traffic" :class="probeSys.show_price!=='true'&&probeSys.show_expire!=='true'?'mt-2':''">流量: <span class="text-emerald-500">↓</span> {{ formatBytes(s[probeSys.auto_reset_traffic === 'true' ? 'monthly_rx' : 'net_rx']) }} | <span class="text-blue-500">↑</span> {{ formatBytes(s[probeSys.auto_reset_traffic === 'true' ? 'monthly_tx' : 'net_tx']) }}</div>
+                                        <div class="probe-card-meta card-meta item-meta item-meta-uptime mt-0.5">在线: {{ (s.uptime||'-').replace('days','天').replace('day','天') }} | 更新: {{ Math.round((Date.now() - s.last_updated)/1000) }}s前</div>
                                         
-                                        <div class="probe-card-badges card-badges">
+                                        <div class="probe-card-badges card-badges item-badges">
                                             <span v-if="probeSys.show_bw === 'true' && s.bandwidth" class="probe-badge badge probe-badge-bw badge-bw">{{ s.bandwidth }}</span>
                                             <span v-if="probeSys.show_tf === 'true' && s.traffic_limit" class="probe-badge badge probe-badge-tf badge-tf">{{ s.traffic_limit }}</span>
                                             <span v-if="s.ip_v4 === '1'" class="probe-badge badge probe-badge-v4 badge-v4">IPv4</span>
                                             <span v-if="s.ip_v6 === '1'" class="probe-badge badge probe-badge-v6 badge-v6">IPv6</span>
                                         </div>
-                                        <div class="probe-ping-box ping-box">
-                                            <span>电信 <span class="font-bold" :style="{color: getPingColor(s.ping_ct)}">{{ s.ping_ct === '0' ? '超时' : s.ping_ct + 'ms' }}</span></span>
-                                            <span>联通 <span class="font-bold" :style="{color: getPingColor(s.ping_cu)}">{{ s.ping_cu === '0' ? '超时' : s.ping_cu + 'ms' }}</span></span>
-                                            <span>移动 <span class="font-bold" :style="{color: getPingColor(s.ping_cm)}">{{ s.ping_cm === '0' ? '超时' : s.ping_cm + 'ms' }}</span></span>
-                                            <span>字节 <span class="font-bold" :style="{color: getPingColor(s.ping_bd)}">{{ s.ping_bd === '0' ? '超时' : s.ping_bd + 'ms' }}</span></span>
+                                        <div class="item-ping">
+                                            <div class="probe-ping-box ping-box">
+                                                <span class="ping-item">电信 <span class="font-bold" :style="{color: getPingColor(s.ping_ct)}">{{ s.ping_ct === '0' ? '超时' : s.ping_ct + 'ms' }}</span></span>
+                                                <span class="ping-item">联通 <span class="font-bold" :style="{color: getPingColor(s.ping_cu)}">{{ s.ping_cu === '0' ? '超时' : s.ping_cu + 'ms' }}</span></span>
+                                                <span class="ping-item">移动 <span class="font-bold" :style="{color: getPingColor(s.ping_cm)}">{{ s.ping_cm === '0' ? '超时' : s.ping_cm + 'ms' }}</span></span>
+                                                <span class="ping-item">字节 <span class="font-bold" :style="{color: getPingColor(s.ping_bd)}">{{ s.ping_bd === '0' ? '超时' : s.ping_bd + 'ms' }}</span></span>
+                                            </div>
                                         </div>
                                     </div>
-                                    <div class="probe-card-right card-right">
-                                        <div class="probe-stat-group stat-group">
+                                    <div class="probe-card-right card-right item-right-bag">
+                                        <div class="probe-stat-group stat-group item-cpu">
                                             <div class="probe-stat-header stat-header"><span class="stat-label">CPU</span><span class="stat-val" :style="{color: s.cpu>80?'#ef4444':''}">{{ parseFloat(s.cpu||0).toFixed(1) }}%</span></div>
-                                            <div class="probe-stat-bar-full stat-bar-full"><div :style="{width: s.cpu+'%', background: s.cpu>80?'#ef4444':'#3b82f6'}"></div></div>
+                                            <div class="probe-stat-bar-full stat-bar-full" :style="{'--percent': Math.min(Math.max(Number(s.cpu) || 0, 0), 100) + '%'}"><div class="stat-bar-inner" :style="{width: s.cpu+'%', background: s.cpu>80?'#ef4444':'#3b82f6'}"></div></div>
                                             <div class="probe-stat-subtext stat-subtext" :title="s.cpu_info">{{ s.cpu_info || '-' }}</div>
                                         </div>
-                                        <div class="probe-stat-group stat-group">
+                                        <div class="probe-stat-group stat-group item-ram">
                                             <div class="probe-stat-header stat-header"><span class="stat-label">内存</span><span class="stat-val" :style="{color: s.ram>80?'#ef4444':''}">{{ parseFloat(s.ram||0).toFixed(1) }}%</span></div>
-                                            <div class="probe-stat-bar-full stat-bar-full"><div :style="{width: s.ram+'%', background: s.ram>80?'#ef4444':'#10b981'}"></div></div>
+                                            <div class="probe-stat-bar-full stat-bar-full" :style="{'--percent': Math.min(Math.max(Number(s.ram) || 0, 0), 100) + '%'}"><div class="stat-bar-inner" :style="{width: s.ram+'%', background: s.ram>80?'#ef4444':'#10b981'}"></div></div>
                                             <div class="probe-stat-subtext stat-subtext">{{ formatBytes(s.ram_used*1048576) }} / {{ formatBytes(s.ram_total*1048576) }}</div>
                                         </div>
-                                        <div class="probe-stat-group stat-group">
+                                        <div class="probe-stat-group stat-group item-disk">
                                             <div class="probe-stat-header stat-header"><span class="stat-label">存储</span><span class="stat-val" :style="{color: s.disk>80?'#ef4444':''}">{{ parseFloat(s.disk||0).toFixed(1) }}%</span></div>
-                                            <div class="probe-stat-bar-full stat-bar-full"><div :style="{width: s.disk+'%', background: s.disk>80?'#ef4444':'#10b981'}"></div></div>
+                                            <div class="probe-stat-bar-full stat-bar-full" :style="{'--percent': Math.min(Math.max(Number(s.disk) || 0, 0), 100) + '%'}"><div class="stat-bar-inner" :style="{width: s.disk+'%', background: s.disk>80?'#ef4444':'#10b981'}"></div></div>
                                             <div class="probe-stat-subtext stat-subtext">{{ formatBytes(s.disk_used*1048576) }} / {{ formatBytes(s.disk_total*1048576) }}</div>
                                         </div>
-                                        <div class="flex justify-between text-[11px] text-gray-500 mt-0.5">
+                                        <div class="flex justify-between text-[11px] text-gray-500 mt-0.5 item-sysinfo">
                                             <div class="truncate mr-1 stat-subtext" :title="s.os+' | '+s.arch+' | '+s.virt">{{ s.os || '-' }} | {{ s.arch || '-' }} | {{ s.virt || '-' }}</div>
                                             <div class="shrink-0 stat-subtext">TCP/UDP: {{ s.tcp_conn||0 }} / {{ s.udp_conn||0 }}</div>
                                         </div>
-                                        <div class="flex justify-between text-[11px] text-gray-500 mt-1">
+                                        <div class="flex justify-between text-[11px] text-gray-500 mt-1 item-speed">
                                             <div class="stat-subtext"><span class="text-emerald-500">↓</span> {{ formatBytes(s.net_in_speed) }}/s</div>
                                             <div class="stat-subtext"><span class="text-blue-500">↑</span> {{ formatBytes(s.net_out_speed) }}/s</div>
                                         </div>
@@ -340,7 +349,7 @@
                     </div>
 
                     <div v-show="probeView === 'map'">
-                        <div id="probe-map-container"></div>
+                        <div id="map-container"></div>
                     </div>
 
                 </div>
@@ -1224,7 +1233,7 @@
                 let mapInitialized = false; let myMap = null; let markersLayer = null; let geoJsonLayer = null; let worldGeoJson = null; let currentMapDataStr = "";
                 const initMap = async () => {
                     if (myMap) return;
-                    myMap = L.map('probe-map-container', { zoomControl: true, attributionControl: false, minZoom: 1 }).setView([30, 10], 2);
+                    myMap = L.map('map-container', { zoomControl: true, attributionControl: false, minZoom: 1 }).setView([30, 10], 2);
                     try { const res = await fetch('https://cdn.jsdelivr.net/gh/johan/world.geo.json@master/countries.geo.json'); worldGeoJson = await res.json(); drawMarkers(); } catch (e) {}
                 };
                 const drawMarkers = () => {
@@ -1232,7 +1241,8 @@
                     const newDataStr = JSON.stringify(probeCountryStats.value);
                     if (currentMapDataStr === newDataStr) return; currentMapDataStr = newDataStr;
                     if(geoJsonLayer) myMap.removeLayer(geoJsonLayer); if(markersLayer) markersLayer.clearLayers(); else markersLayer = L.layerGroup().addTo(myMap);
-                    const isDark = probeSys.theme === 'theme2' || probeSys.theme === 'theme5';
+                    const activeTheme = availableThemes.value.find(theme => theme.id === probeSys.theme);
+                    const isDark = Boolean(activeTheme?.is_dark);
                     const activeIso3 = {}; for (const code in probeCountryStats.value) { if (iso2To3[code]) activeIso3[iso2To3[code]] = true; }
                     
                     if (activeIso3['CHN'] || activeIso3['TWN'] || activeIso3['HKG'] || activeIso3['MAC']) {
